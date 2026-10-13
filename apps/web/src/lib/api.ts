@@ -24,3 +24,12 @@ export async function api<T = any>(path: string, init?: { method?: string; body?
 
 /** santim → "265 ETB" */
 export const birr = (santim: number) => `${(santim / 100).toLocaleString("en-US")} ETB`;
+/** "265.5" (ETB typed by staff) → santim */
+export const toSantim = (etb: string) => Math.round(Number(etb) * 100);
+/** basis points → "10%" */
+export const pct = (bps: number) => `${(bps / 100).toLocaleString("en-US")}%`;
+
+export const DOC_LABEL: Record<string, string> = {
+  license: "Driving licence", photo: "Photo", national_id: "National ID",
+  vehicle_libre: "Ownership booklet (libre)", vehicle_insurance: "Insurance", vehicle_bolo: "Annual inspection (bolo)",
+};

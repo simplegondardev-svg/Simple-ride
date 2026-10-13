@@ -15,7 +15,7 @@ interface DayBook {
 const todayInAddis = () => new Intl.DateTimeFormat("en-CA", { timeZone: "Africa/Addis_Ababa" }).format(new Date());
 const KIND: Record<string, string> = {
   topup: "Top-up", trip_payment: "Trip payment", trip_earning: "Driver earning", commission: "Commission",
-  payout: "Payout", refund: "Refund", bonus: "Bonus", adjustment: "Manual adjustment",
+  payout: "Refund payout", deposit: "Driver deposit", refund: "Refund", bonus: "Bonus", adjustment: "Manual adjustment",
 };
 
 export default function DayBookPage() {

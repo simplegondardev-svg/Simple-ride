@@ -18,10 +18,15 @@ export function useMe() {
   };
 }
 
+const has = (me: Me, ...perms: string[]) => me.role === "admin" || perms.some((p) => me.permissions.includes(p));
+
 const NAV: { href: string; label: string; show: (me: Me) => boolean }[] = [
   { href: "/admin", label: "Overview", show: () => true },
-  { href: "/admin/daybook", label: "Day book",
-    show: (me) => me.role === "admin" || me.permissions.includes("finance.daybook.view") },
+  { href: "/admin/drivers", label: "Drivers",
+    show: (me) => has(me, "drivers.view", "drivers.approve", "drivers.commission", "finance.deposits.record", "finance.refunds.manage") },
+  { href: "/admin/refunds", label: "Refunds", show: (me) => has(me, "finance.refunds.manage") },
+  { href: "/admin/daybook", label: "Day book", show: (me) => has(me, "finance.daybook.view") },
+  { href: "/admin/settings", label: "Settings", show: (me) => has(me, "pricing.manage") },
   { href: "/admin/staff", label: "Staff", show: (me) => me.role === "admin" },
   { href: "/admin/account", label: "My password", show: () => true },
 ];
@@ -46,7 +51,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
         <nav className="row">
           <b>Simple Ride · {me?.role === "staff" ? "Staff" : "Admin"}</b>
           {me && NAV.filter((n) => n.show(me)).map((n) => (
-            <Link key={n.href} href={n.href} aria-current={path === n.href ? "page" : undefined}>{n.label}</Link>
+            <Link key={n.href} href={n.href} aria-current={(n.href === "/admin" ? path === n.href : path.startsWith(n.href)) ? "page" : undefined}>{n.label}</Link>
           ))}
         </nav>
         <button className="secondary" onClick={logout}>Log out</button>

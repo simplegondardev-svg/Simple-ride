@@ -6,7 +6,7 @@ import { SYSTEM, withContext } from "../src/db/context.js";
 import { pool } from "../src/db/pool.js";
 import { redis } from "../src/lib/redis.js";
 import { rankByEta, sweepTrips } from "../src/modules/trips/service.js";
-import { BOLE, grant, makeBackoffice, PASSWORD, PIASSA, randomPhone } from "./helpers.js";
+import { BOLE, fundDriver, grant, makeBackoffice, PASSWORD, PIASSA, randomPhone } from "./helpers.js";
 
 const app = createApp();
 const bearer = (t: string) => ({ Authorization: `Bearer ${t}` });
@@ -28,6 +28,7 @@ async function onlineDriver(at: { lat: number; lng: number }): Promise<Session> 
       [d.user.id, `T-${randomUUID().slice(0, 8)}`],
     );
   });
+  await fundDriver(d.user.id);
   await request(app).post("/api/v1/drivers/me/online").set(bearer(d.accessToken)).send({ location: at }).expect(200);
   return d;
 }
@@ -187,7 +188,7 @@ describe("overtime at completion", () => {
     const cap = Math.floor((trip.fareEstimate * 0.25) / 100) * 100;
     expect(done.overtimeAmount).toBe(cap);
     const wallet = await request(app).get("/api/v1/users/me/wallet").set(bearer(driver.accessToken)).expect(200);
-    expect(wallet.body.balance).toBe(-Math.round((trip.fareEstimate + cap) * 0.1));
+    expect(wallet.body.balance).toBe(1_000_000 - Math.round((trip.fareEstimate + cap) * 0.1));
   });
 
   it("the cap follows the admin setting", async () => {
@@ -275,7 +276,7 @@ describe("settings", () => {
     const token = (await request(app).post("/api/v1/auth/login")
       .send({ phone: admin.phone, password: PASSWORD, role: "admin", platform: "web" })).body.accessToken;
     await request(app).patch("/api/v1/admin/settings").set(bearer(token)).send({ overtimeCapBps: 2000 }).expect(200);
-    expect((await request(app).get("/api/v1/admin/settings").set(bearer(token))).body).toEqual({ overtimeCapBps: 2000 });
+    expect((await request(app).get("/api/v1/admin/settings").set(bearer(token))).body).toMatchObject({ overtimeCapBps: 2000 });
     await request(app).patch("/api/v1/admin/settings").set(bearer(token)).send({ overtimeCapBps: 20000 }).expect(422);
     await request(app).patch("/api/v1/admin/settings").set(bearer(token)).send({ somethingElse: 1 }).expect(422);
     await request(app).patch("/api/v1/admin/settings").set(bearer(token)).send({ overtimeCapBps: 2500 }).expect(200);

@@ -7,6 +7,9 @@ import { emitToUser } from "../../realtime/socket.js";
 import { findNearby, getPosition, setAvailable, setUnavailable, staleDrivers, type NearbyDriver } from "../drivers/presence.js";
 import { drivingTimesTo, getRoute, type Leg, type LatLng } from "../geo/gebeta.js";
 import { calculateFare, overtimeCharge, type FareRules } from "../pricing/fare.js";
+import { balances, commissionBps, moneySettings, walletStatus } from "../drivers/money.js";
+import { postLedger } from "../wallet/ledger.js";
+import { expireDocuments } from "../drivers/documents.js";
 import { TRANSITIONS, type TripAction } from "./state-machine.js";
 
 const OFFER_TTL_S = 20;
@@ -203,9 +206,14 @@ export async function dispatch(tripId: string): Promise<number> {
 
   const pickup = { lat: trip.lat, lng: trip.lng };
   const skip = new Set<string>(trip.offered);
-  const nearby = (await findNearby(trip.category_code, pickup, SEARCH_RADIUS_M, CANDIDATES + skip.size))
-    .filter((d) => !skip.has(d.driverId))
-    .slice(0, CANDIDATES);
+  const near = (await findNearby(trip.category_code, pickup, SEARCH_RADIUS_M, CANDIDATES + skip.size))
+    .filter((d) => !skip.has(d.driverId));
+  // Drivers whose prepaid commission balance is below the threshold get no offers.
+  const funded = await withContext(SYSTEM, async (db) => {
+    const [s, bal] = await Promise.all([moneySettings(db), balances(db, near.map((d) => d.driverId))]);
+    return new Set(near.filter((d) => (bal.get(d.driverId) ?? 0) >= s.lowBalanceThreshold).map((d) => d.driverId));
+  });
+  const nearby = near.filter((d) => funded.has(d.driverId)).slice(0, CANDIDATES);
   if (nearby.length === 0) return 0;
 
   const legs = await drivingTimesTo(nearby, pickup).catch((err) => {
@@ -260,21 +268,6 @@ export async function acceptanceRate(db: PoolClient, driverId: string): Promise<
   return r.total === 0 ? null : r.accepted / r.total;
 }
 
-async function postLedger(
-  db: PoolClient, userId: string, amount: number, kind: string, tripId: string | null,
-) {
-  const { rows } = await db.query<{ balance: number }>(
-    "UPDATE wallets SET balance = balance + $2, updated_at = now() WHERE user_id = $1 RETURNING balance",
-    [userId, amount],
-  );
-  if (!rows[0]) throw new Error(`wallet missing for ${userId}`);
-  await db.query(
-    `INSERT INTO wallet_transactions (user_id, amount, balance_after, kind, trip_id)
-     VALUES ($1, $2, $3, $4, $5)`,
-    [userId, amount, rows[0].balance, kind, tripId],
-  );
-}
-
 /** Driver accepts an offer. Runs in SYSTEM context: drivers can't self-assign. */
 export async function acceptTrip(driverId: string, tripId: string) {
   const trip = await withContext(SYSTEM, async (db) => {
@@ -290,6 +283,7 @@ export async function acceptTrip(driverId: string, tripId: string) {
       "SELECT id FROM vehicles WHERE driver_id = $1 AND is_current AND status = 'approved'", [driverId],
     );
     if (!vehicle) throw new AppError(422, "NO_ACTIVE_VEHICLE", "No approved vehicle selected");
+    await requireFunded(db, driverId);
 
     let rows;
     try {
@@ -394,7 +388,7 @@ export async function completeTrip(driverId: string, tripId: string) {
   const trip = await withContext(SYSTEM, async (db) => {
     const { rows: [cur] } = await db.query(
       `SELECT t.fare_estimate, t.est_duration_s, extract(epoch FROM now() - t.started_at)::int AS actual_s,
-              c.per_minute, c.commission_bps
+              c.per_minute
          FROM trips t JOIN vehicle_categories c ON c.code = t.category_code
         WHERE t.id = $1 AND t.driver_id = $2 AND t.status = 'in_progress'
         FOR UPDATE OF t`,
@@ -407,7 +401,9 @@ export async function completeTrip(driverId: string, tripId: string) {
       perMinute: cur.per_minute, capBps: Number(await getSetting(db, "overtime_cap_bps", 2500)),
     });
     const finalFare = cur.fare_estimate + overtime;
-    const commission = Math.round((finalFare * cur.commission_bps) / 10_000);
+    const settings = await moneySettings(db);
+    const rateBps = await commissionBps(db, driverId, settings);
+    const commission = Math.round((finalFare * rateBps) / 10_000);
 
     const { rows: [trip] } = await db.query(
       `UPDATE trips AS t SET status = 'completed', completed_at = now(), final_fare = $3,
@@ -418,28 +414,49 @@ export async function completeTrip(driverId: string, tripId: string) {
       [tripId, driverId, finalFare, overtime, commission],
     );
 
+    let balance = (await balances(db, [driverId])).get(driverId) ?? 0;
     if (trip.paymentMethod === "cash") {
-      if (commission > 0) await postLedger(db, driverId, -commission, "commission", tripId);
+      // The driver collected the fare in cash; our share comes out of their deposit.
+      if (commission > 0) balance = await postLedger(db, { userId: driverId, amount: -commission, kind: "commission", tripId });
     } else if (trip.paymentMethod === "wallet") {
-      await postLedger(db, trip.customerId, -finalFare, "trip_payment", tripId);
-      await postLedger(db, driverId, finalFare - commission, "trip_earning", tripId);
+      await postLedger(db, { userId: trip.customerId, amount: -finalFare, kind: "trip_payment", tripId });
+      balance = await postLedger(db, { userId: driverId, amount: finalFare - commission, kind: "trip_earning", tripId });
       await db.query("UPDATE trips SET payment_status = 'paid' WHERE id = $1", [tripId]);
       trip.paymentStatus = "paid";
     }
     // telebirr: payment is collected through the provider flow (after the pilot).
 
-    await db.query("UPDATE driver_profiles SET availability = 'online' WHERE user_id = $1", [driverId]);
+    // Below the threshold the driver may not take more trips until they deposit.
+    const wallet = walletStatus(balance, settings);
+    await db.query("UPDATE driver_profiles SET availability = $2 WHERE user_id = $1",
+      [driverId, wallet.canReceiveTrips ? "online" : "offline"]);
     await db.query(
       "INSERT INTO trip_events (trip_id, actor_id, event, data) VALUES ($1, $2, 'completed', $3)",
-      [tripId, driverId, { quote: cur.fare_estimate, overtime, finalFare, commission,
+      [tripId, driverId, { quote: cur.fare_estimate, overtime, finalFare, commission, commissionBps: rateBps,
         estimatedS: cur.est_duration_s, actualS: cur.actual_s }],
     );
-    return trip;
+    return { trip, wallet };
   });
 
-  await afterTripEnded(driverId, trip.categoryCode);
-  emitToUser(trip.customerId, "trip:updated", trip);
-  return trip;
+  if (trip.wallet.canReceiveTrips) {
+    await afterTripEnded(driverId, trip.trip.categoryCode);
+  } else {
+    await redis.del(`driver:trip:${driverId}`);
+    await setUnavailable(driverId);
+    emitToUser(driverId, "driver:availability", { availability: "offline", reason: "LOW_BALANCE", wallet: trip.wallet });
+  }
+  if (trip.wallet.needsTopUp) emitToUser(driverId, "driver:wallet", trip.wallet);
+  emitToUser(trip.trip.customerId, "trip:updated", trip.trip);
+  return trip.trip;
+}
+
+/** Refuse when the driver's prepaid balance is below the threshold. */
+export async function requireFunded(db: PoolClient, driverId: string) {
+  const s = await moneySettings(db);
+  const w = walletStatus((await balances(db, [driverId])).get(driverId) ?? 0, s);
+  if (!w.canReceiveTrips) {
+    throw new AppError(402, "DEPOSIT_REQUIRED", "Deposit needed before taking trips", w);
+  }
 }
 
 /**
@@ -532,11 +549,15 @@ async function afterTripEnded(driverId: string, category: string) {
  *  - start the next offer round for searching trips with no live offers
  *  - take drivers whose app stopped pinging out of matching
  *  - repair drivers marked "on trip" without an active trip
+ *  - hourly: expire documents past their date and suspend those drivers
  */
 export async function sweepTrips() {
   // Several API instances may run the sweeper; only one per interval works.
   const lock = await redis.set("sweep:lock", process.pid.toString(), "PX", SWEEP_LOCK_MS, "NX");
   if (!lock) return;
+
+  // At most hourly (own Redis key): expire documents and suspend affected drivers.
+  await expireDocuments().catch((err) => logger.error({ err }, "document expiry check failed"));
 
   const stale = await staleDrivers();
   for (const id of stale) await setUnavailable(id);

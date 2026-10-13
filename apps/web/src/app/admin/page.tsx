@@ -1,11 +1,13 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { useMe } from "@/components/AdminShell";
 import { api, birr } from "@/lib/api";
 
 interface Stats { customers: number; drivers: number; pendingDrivers: number; driversOnline: number;
-  activeTrips: number; tripsToday: number; openSos: number }
+  activeTrips: number; tripsToday: number; openSos: number;
+  documentsToReview: number; documentsExpiring: number; pendingRefunds: number }
 interface PendingDriver { id: string; phone: string; fullName: string | null; licenseNumber: string | null;
   vehicles: { id: string; plateNumber: string; make: string; model: string; categoryCode: string }[] }
 interface TripRow { id: string; status: string; categoryCode: string; fareEstimate: number;
@@ -21,7 +23,6 @@ export default function AdminOverview() {
 
   const showStats = can("dashboard.view");
   const showDrivers = can("drivers.view", "drivers.approve");
-  const canApprove = can("drivers.approve");
   const showTrips = can("trips.view");
 
   const load = useCallback(async () => {
@@ -40,14 +41,10 @@ export default function AdminOverview() {
 
   useEffect(() => { load(); }, [load]);
 
-  async function review(driverId: string, decision: "approved" | "rejected", vehicleId?: string) {
-    await api(`admin/drivers/${driverId}/review`, { body: { decision, vehicleId } });
-    load();
-  }
-
   const tiles: [keyof Stats, string][] = [
     ["activeTrips", "Active trips"], ["tripsToday", "Completed (24h)"], ["driversOnline", "Drivers online"],
-    ["pendingDrivers", "Pending drivers"], ["customers", "Riders"], ["drivers", "Drivers"], ["openSos", "Open SOS"],
+    ["pendingDrivers", "Pending drivers"], ["documentsToReview", "Documents to review"], ["documentsExpiring", "Documents expiring (30d)"],
+    ["pendingRefunds", "Refund requests"], ["customers", "Riders"], ["drivers", "Drivers"], ["openSos", "Open SOS"],
   ];
 
   if (me && !showStats && !showDrivers && !showTrips) {
@@ -71,7 +68,7 @@ export default function AdminOverview() {
           <div className="card" style={{ overflowX: "auto" }}>
             {pending.length === 0 ? <p className="muted">No drivers waiting.</p> : (
               <table>
-                <thead><tr><th>Driver</th><th>License</th><th>Vehicle</th>{canApprove && <th />}</tr></thead>
+                <thead><tr><th>Driver</th><th>License</th><th>Vehicle</th><th /></tr></thead>
                 <tbody>
                   {pending.map((d) => (
                     <tr key={d.id}>
@@ -79,13 +76,7 @@ export default function AdminOverview() {
                       <td>{d.licenseNumber ?? <span className="muted">not submitted</span>}</td>
                       <td>{d.vehicles[0] ? `${d.vehicles[0].plateNumber} · ${d.vehicles[0].make} ${d.vehicles[0].model} (${d.vehicles[0].categoryCode})`
                         : <span className="muted">none</span>}</td>
-                      {canApprove && (
-                        <td className="row">
-                          <button disabled={!d.vehicles[0] || !d.licenseNumber}
-                            onClick={() => review(d.id, "approved", d.vehicles[0]?.id)}>Approve</button>
-                          <button className="secondary" onClick={() => review(d.id, "rejected", d.vehicles[0]?.id)}>Reject</button>
-                        </td>
-                      )}
+                      <td><Link className="btn" href={`/admin/drivers/${d.id}`}>Review</Link></td>
                     </tr>
                   ))}
                 </tbody>

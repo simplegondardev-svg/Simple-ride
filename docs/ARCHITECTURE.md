@@ -24,6 +24,10 @@
 | `modules/trips/state-machine.ts` | The single definition of the trip lifecycle. |
 | `modules/trips/service.ts` | Request, dispatch, accept, transitions, settlement, sweeps. |
 | `modules/drivers/presence.ts` | Live positions in Redis; throttled persistence to PostGIS. |
+| `modules/drivers/documents.ts` | Document uploads, review, requirements, hourly expiry (auto-suspend). |
+| `modules/drivers/money.ts` | Deposit rules: wallet status, the balance threshold, per-driver commission. |
+| `modules/wallet/ledger.ts` | `postLedger()`: the one way money moves; returns the new balance. |
+| `lib/storage.ts` | Signed upload/download URLs: S3-compatible storage or the local disk (development). |
 | `modules/geo/gebeta.ts` | Every Gebeta call: caching, defensive parsing, fallback estimate. |
 | `modules/pricing/fare.ts` | Pure fare function, in integer santim. |
 | `realtime/socket.ts` | Socket.IO auth, rooms (`user:<id>`), driver pings. |
@@ -87,7 +91,10 @@ Every role logs in with **phone number + password** (`POST /auth/login`). Riders
 | `dashboard.view` | Dashboard statistics |
 | `users.view` / `users.suspend` | View riders and drivers / suspend or reactivate them |
 | `users.reset_password` | Issue a temporary password to a rider or driver who forgot theirs |
-| `drivers.view` / `drivers.approve` | View driver profiles and vehicles / approve, reject, suspend |
+| `drivers.view` / `drivers.approve` | View driver profiles, vehicles, documents / review documents; approve, reject, suspend |
+| `drivers.commission` | Set a driver's custom commission rate (audited) |
+| `finance.deposits.record` | Record a deposit received at the office (ledger kind `deposit`) |
+| `finance.refunds.manage` | Pay out or reject deposit refund requests |
 | `trips.view` / `trips.cancel` | View trips, timelines, ratings / cancel active trips |
 | `finance.daybook.view` | The day book: one Addis Ababa day of trips and wallet movements |
 | `finance.wallets.view` / `finance.wallets.adjust` | Wallet balances and history / manual credit or debit (with reason) |
@@ -97,6 +104,38 @@ Every role logs in with **phone number + password** (`POST /auth/login`). Riders
 
 Adding a permission: add it to `PERMISSIONS`, `INSERT` it in a new migration, gate the route with
 `requirePermission`, and add an RLS policy if it controls data.
+
+## Driver onboarding, deposits and commission (CP5)
+
+**Documents.** Required for approval: licence and photo per driver; libre, insurance and bolo per vehicle.
+The licence, insurance and bolo need an expiry date.
+1. The app calls `POST /drivers/me/documents {docType, vehicleId?, contentType, sizeBytes}`.
+   It gets a document row and a signed `PUT` URL (10 min; jpeg, png, webp or pdf; at most 10 MB; content type and length are signed).
+2. The app uploads the bytes straight to storage. The API never proxies them on its JSON routes.
+3. The app calls `POST /drivers/me/documents/:id/submit {expiresOn?}`. The API checks that the object exists (else `409 DOCUMENT_NOT_UPLOADED`).
+4. Staff review with `POST /admin/documents/:id/review`. Rejecting needs a reason. Expired documents can't be approved. An approved document retires the older copy (`replaced`).
+5. `POST /admin/drivers/:id/review` with `approved` fails with `422 DOCUMENTS_INCOMPLETE` (and `details.missing`) until every required document is approved.
+6. Once an hour, the sweeper expires approved documents past their date. It suspends the driver with `suspended_reason = DOCUMENT_EXPIRED:<type>` and takes them offline.
+
+Storage is chosen by `STORAGE_DRIVER`:
+- `s3`: any S3-compatible store (`S3_*` env); presigned URLs; CI tests it against moto.
+- `local`: development; files under `STORAGE_DIR`, served by `/api/v1/files/*key` with HMAC-signed, expiring URLs.
+
+**Deposits.** Drivers prepay commission:
+- Staff record cash received with `POST /admin/drivers/:id/deposits`, at least `min_deposit` (default 10,000 ETB). It is ledger kind `deposit`, written in SYSTEM context with `created_by` set to the staff member.
+- Each completed trip deducts commission from the wallet: the driver's `commission_bps`, or `default_commission_bps` (10%).
+- Below `low_balance_threshold` the driver:
+  - can finish the current trip;
+  - is taken offline at completion;
+  - is skipped by dispatch;
+  - is refused on `online` and `accept` with `402 DEPOSIT_REQUIRED` (wallet status in `details`).
+- Below `low_balance_warning` the app is told to top up (`wallet.needsTopUp`, socket `driver:wallet`).
+
+**Refunds.** After `refund_after_days` (default 90) from approval, a driver may request the remaining balance:
+- `POST /drivers/me/refunds`, with at most one pending request.
+- Staff pay it out as a `payout` (the driver goes offline) or reject it with a reason.
+
+All the thresholds live in `app_settings` and are edited on the back-office Settings page.
 
 ## Matching (dispatch v2)
 

@@ -166,8 +166,20 @@ export const Vehicle = model("Vehicle", z.object({
   isCurrent: z.boolean(),
 }));
 
+export const WalletStatus = model("WalletStatus", z.object({
+  balance: santim.describe("Prepaid deposit balance (santim)"),
+  threshold: santim.describe("Below this the driver can't go online or get offers"),
+  warningLevel: santim.describe("Below this, ask the driver to top up"),
+  minDeposit: santim.describe("Smallest deposit accepted"),
+  canReceiveTrips: z.boolean(),
+  needsTopUp: z.boolean(),
+}));
+
 export const DriverMe = model("DriverMe", z.object({
   approvalStatus: z.enum(["pending", "approved", "rejected", "suspended"]),
+  suspendedReason: z.string().nullable().describe("e.g. DOCUMENT_EXPIRED:license"),
+  customCommissionBps: z.number().int().nullable().describe("Custom rate set by admin; null = default"),
+  wallet: WalletStatus,
   licenseNumber: z.string().nullable(),
   licenseExpiresOn: z.iso.date().nullable(),
   availability: z.enum(["offline", "online", "on_trip"]),
@@ -175,6 +187,83 @@ export const DriverMe = model("DriverMe", z.object({
   ratingCount: z.number().int(),
   acceptanceRate: z.number().nullable().describe("Share of recent offers accepted (0–1); null before any offers"),
   vehicles: z.array(Vehicle),
+}));
+
+export const DocumentType = model("DocumentType",
+  z.enum(["license", "photo", "national_id", "vehicle_libre", "vehicle_insurance", "vehicle_bolo"]));
+
+export const DriverDocument = model("DriverDocument", z.object({
+  id: z.uuid(),
+  driverId: z.uuid(),
+  vehicleId: z.uuid().nullable(),
+  docType: DocumentType,
+  status: z.enum(["uploading", "pending", "approved", "rejected", "expired", "replaced"]),
+  contentType: z.string(),
+  sizeBytes: z.number().int(),
+  expiresOn: z.iso.date().nullable(),
+  rejectReason: z.string().nullable().describe("Shown to the driver when rejected"),
+  uploadedAt: isoTime,
+  submittedAt: isoTime.nullable(),
+  reviewedAt: isoTime.nullable(),
+}));
+
+export const UploadTarget = model("UploadTarget", z.object({
+  url: z.string().describe("PUT the file here before it expires"),
+  method: z.literal("PUT"),
+  headers: z.record(z.string(), z.string()).describe("Send exactly these headers"),
+  expiresAt: isoTime,
+}));
+
+export const DocumentUpload = model("DocumentUpload", z.object({ document: DriverDocument, upload: UploadTarget }));
+
+export const DocumentRequirement = model("DocumentRequirement", z.object({
+  docType: DocumentType,
+  vehicleId: z.uuid().nullable(),
+  status: z.enum(["missing", "uploading", "pending", "approved", "rejected", "expired"]),
+  expiresOn: z.iso.date().nullable(),
+}));
+
+export const DriverDocuments = model("DriverDocuments", z.object({
+  documents: z.array(DriverDocument),
+  required: z.array(DocumentRequirement).describe("Approval needs every one of these approved"),
+}));
+
+export const EarningsItem = model("EarningsItem", z.object({
+  tripId: z.uuid(),
+  completedAt: isoTime,
+  fare: santim,
+  commission: santim,
+  net: santim,
+  overtime: santim,
+  paymentMethod: z.enum(["cash", "telebirr", "wallet"]),
+  pickupAddress: z.string().nullable(),
+  dropoffAddress: z.string().nullable(),
+}));
+
+export const Earnings = model("Earnings", z.object({
+  period: z.enum(["today", "week", "month"]),
+  from: isoTime,
+  to: isoTime,
+  trips: z.number().int(),
+  gross: santim.describe("Fares of completed trips"),
+  commission: santim,
+  net: santim.describe("gross − commission"),
+  overtime: santim,
+  cashCollected: santim.describe("Fares the driver received in cash"),
+  paidToWallet: santim.describe("Net of non-cash trips credited to the wallet"),
+  wallet: WalletStatus,
+  items: z.array(EarningsItem),
+}));
+
+export const DepositRefund = model("DepositRefund", z.object({
+  id: z.uuid(),
+  status: z.enum(["pending", "paid", "rejected", "cancelled"]),
+  requestedAt: isoTime,
+  note: z.string().nullable(),
+  amount: santim.nullable().describe("Set when paid"),
+  reference: z.string().nullable(),
+  rejectReason: z.string().nullable(),
+  decidedAt: isoTime.nullable(),
 }));
 
 export const TripOffer = model("TripOffer", z.object({

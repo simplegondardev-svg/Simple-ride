@@ -36,10 +36,17 @@ jobs:
         run: |
           PGPASSWORD=owner_dev_password psql -h localhost -U simpleride_owner -d simpleride -c \
             "CREATE ROLE simpleride_app LOGIN PASSWORD 'app_dev_password' NOBYPASSRLS; GRANT CONNECT ON DATABASE simpleride TO simpleride_app;"
+      - name: S3-compatible test server (moto) for the storage driver test
+        run: |
+          pip install --quiet "moto[server]>=5,<6"
+          nohup moto_server -H 127.0.0.1 -p 9000 > moto.log 2>&1 &
+          for i in $(seq 1 20); do curl -fs http://127.0.0.1:9000/ >/dev/null && break; sleep 1; done
       - run: pnpm --filter @simple-ride/api typecheck
       - run: pnpm --filter @simple-ride/api db:migrate
       - run: pnpm --filter @simple-ride/api db:seed
       - run: pnpm --filter @simple-ride/api test
+        env:
+          TEST_S3_ENDPOINT: http://127.0.0.1:9000
       - run: pnpm --filter @simple-ride/api build
 
   web:

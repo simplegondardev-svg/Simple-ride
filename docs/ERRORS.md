@@ -63,6 +63,26 @@ fails the build.
 | `TRIP_ALREADY_TAKEN` | 409 | Another driver accepted first. | "Taken by another driver"; dismiss. |
 | `DRIVER_BUSY` | 409 | Accepting while already on a trip. | Return to the active trip. |
 | `PLATE_TAKEN` | 409 | Plate already registered. | "This plate is already registered, contact support". |
+| `DEPOSIT_REQUIRED` | 402 | Prepaid deposit balance is below the threshold (going online or accepting). `details` = wallet status (`balance`, `threshold`, `minDeposit`, …). | "Top up your deposit (at least `minDeposit`) at the office to take trips". |
+
+## Driver documents
+
+| Code | HTTP | Meaning | What the app should do |
+|---|---|---|---|
+| `DOCUMENT_NOT_UPLOADED` | 409 | Submitting before the file reached storage, or with a different size. | Upload again from step 1 (the link may have expired). |
+| `UPLOAD_MISMATCH` | 422 | The uploaded file's type or size differs from what was declared (development storage). | Re-request the upload with the real type and size. |
+| `INVALID_SIGNATURE` | 403 | Upload/download link is invalid or expired (development storage). | Request a new link. |
+| `DOCUMENT_EXPIRED` | 422 | Back office: approving a document whose expiry date has passed. | Reject it and ask the driver for a current one. |
+| `DOCUMENTS_INCOMPLETE` | 422 | Back office: approving a driver or vehicle before every required document is approved. `details.missing` lists them. | Review the listed documents first. |
+
+## Deposits and refunds
+
+| Code | HTTP | Meaning | What the app should do |
+|---|---|---|---|
+| `DEPOSIT_TOO_SMALL` | 422 | Back office: deposit below the minimum. `details.minDeposit`. | Collect at least the minimum. |
+| `REFUND_NOT_ELIGIBLE` | 422 | Refund requested before the refund period has passed since approval. `details.eligibleFrom`, `details.refundAfterDays`. | "You can request a refund from …". |
+| `NOTHING_TO_REFUND` | 422 | Deposit balance is zero (or negative). | Hide the refund button when the balance is 0. |
+| `REFUND_ALREADY_REQUESTED` | 409 | A refund request is already pending. | Show the pending request. |
 
 ## Back office
 

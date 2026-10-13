@@ -96,7 +96,11 @@ The building blocks already exist: `src/auth/otp.ts` (6-digit codes in Redis, 5-
 
 - Seeded fares are placeholders until benchmarked. Business rules (10% default commission, prepaid driver
   deposit, low-balance block, refunds after 3 months, +25% overtime cap, no cancellation fees) are decided —
-  see the table in `docs/MVP_CHECKPOINTS.md`. Overtime is implemented (CP2); the deposit rules are CP5.
+  see the table in `docs/MVP_CHECKPOINTS.md`. Overtime (CP2) and the deposit, commission and refund rules (CP5) are implemented;
+  thresholds live in `app_settings` (back-office Settings page).
 - `pricing.manage`, `zones.manage`, `sos.*` permissions have RLS rules but no endpoints/screens yet.
-- telebirr payments, push notifications (FCM), driver document uploads — see `docs/MVP_CHECKPOINTS.md`.
+- telebirr payments, push notifications (FCM) — see `docs/MVP_CHECKPOINTS.md`.
+- Money moves only through `postLedger()` (`src/modules/wallet/ledger.ts`). Driver files only through `src/lib/storage.ts`
+  (signed URLs; `STORAGE_DRIVER=local` in dev, `s3` in production; the S3 test runs when `TEST_S3_ENDPOINT` is set — CI uses moto).
+- Dart client: `tools/generate-dart-client.sh` maps `format: date` to `String` on purpose (the API rejects full timestamps there).
 - Dispatch changes: rerun `pnpm --filter @simple-ride/api simulate` against a running API (CP2 exit check).

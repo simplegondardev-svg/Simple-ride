@@ -34,6 +34,9 @@
     },
     {
       "name": "Back office"
+    },
+    {
+      "name": "Files (development)"
     }
   ],
   "components": {
@@ -1050,6 +1053,41 @@
           "isCurrent"
         ]
       },
+      "WalletStatus": {
+        "type": "object",
+        "properties": {
+          "balance": {
+            "type": "integer",
+            "description": "Prepaid deposit balance (santim)"
+          },
+          "threshold": {
+            "type": "integer",
+            "description": "Below this the driver can't go online or get offers"
+          },
+          "warningLevel": {
+            "type": "integer",
+            "description": "Below this, ask the driver to top up"
+          },
+          "minDeposit": {
+            "type": "integer",
+            "description": "Smallest deposit accepted"
+          },
+          "canReceiveTrips": {
+            "type": "boolean"
+          },
+          "needsTopUp": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "balance",
+          "threshold",
+          "warningLevel",
+          "minDeposit",
+          "canReceiveTrips",
+          "needsTopUp"
+        ]
+      },
       "DriverMe": {
         "type": "object",
         "properties": {
@@ -1061,6 +1099,27 @@
               "rejected",
               "suspended"
             ]
+          },
+          "suspendedReason": {
+            "description": "e.g. DOCUMENT_EXPIRED:license",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "customCommissionBps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Custom rate set by admin; null = default"
+          },
+          "wallet": {
+            "$ref": "#/components/schemas/WalletStatus"
           },
           "licenseNumber": {
             "type": [
@@ -1109,6 +1168,9 @@
         },
         "required": [
           "approvalStatus",
+          "suspendedReason",
+          "customCommissionBps",
+          "wallet",
           "licenseNumber",
           "licenseExpiresOn",
           "availability",
@@ -1116,6 +1178,440 @@
           "ratingCount",
           "acceptanceRate",
           "vehicles"
+        ]
+      },
+      "DocumentType": {
+        "type": "string",
+        "enum": [
+          "license",
+          "photo",
+          "national_id",
+          "vehicle_libre",
+          "vehicle_insurance",
+          "vehicle_bolo"
+        ]
+      },
+      "DriverDocument": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "driverId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "vehicleId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "docType": {
+            "$ref": "#/components/schemas/DocumentType"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "uploading",
+              "pending",
+              "approved",
+              "rejected",
+              "expired",
+              "replaced"
+            ]
+          },
+          "contentType": {
+            "type": "string"
+          },
+          "sizeBytes": {
+            "type": "integer"
+          },
+          "expiresOn": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rejectReason": {
+            "description": "Shown to the driver when rejected",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "uploadedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "submittedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reviewedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "driverId",
+          "vehicleId",
+          "docType",
+          "status",
+          "contentType",
+          "sizeBytes",
+          "expiresOn",
+          "rejectReason",
+          "uploadedAt",
+          "submittedAt",
+          "reviewedAt"
+        ]
+      },
+      "UploadTarget": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "PUT the file here before it expires"
+          },
+          "method": {
+            "type": "string",
+            "const": "PUT"
+          },
+          "headers": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Send exactly these headers"
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "url",
+          "method",
+          "headers",
+          "expiresAt"
+        ]
+      },
+      "DocumentUpload": {
+        "type": "object",
+        "properties": {
+          "document": {
+            "$ref": "#/components/schemas/DriverDocument"
+          },
+          "upload": {
+            "$ref": "#/components/schemas/UploadTarget"
+          }
+        },
+        "required": [
+          "document",
+          "upload"
+        ]
+      },
+      "DocumentRequirement": {
+        "type": "object",
+        "properties": {
+          "docType": {
+            "$ref": "#/components/schemas/DocumentType"
+          },
+          "vehicleId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "missing",
+              "uploading",
+              "pending",
+              "approved",
+              "rejected",
+              "expired"
+            ]
+          },
+          "expiresOn": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "docType",
+          "vehicleId",
+          "status",
+          "expiresOn"
+        ]
+      },
+      "DriverDocuments": {
+        "type": "object",
+        "properties": {
+          "documents": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DriverDocument"
+            }
+          },
+          "required": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DocumentRequirement"
+            },
+            "description": "Approval needs every one of these approved"
+          }
+        },
+        "required": [
+          "documents",
+          "required"
+        ]
+      },
+      "EarningsItem": {
+        "type": "object",
+        "properties": {
+          "tripId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "completedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "fare": {
+            "type": "integer",
+            "description": "Money in santim (1 ETB = 100 santim)"
+          },
+          "commission": {
+            "type": "integer",
+            "description": "Money in santim (1 ETB = 100 santim)"
+          },
+          "net": {
+            "type": "integer",
+            "description": "Money in santim (1 ETB = 100 santim)"
+          },
+          "overtime": {
+            "type": "integer",
+            "description": "Money in santim (1 ETB = 100 santim)"
+          },
+          "paymentMethod": {
+            "type": "string",
+            "enum": [
+              "cash",
+              "telebirr",
+              "wallet"
+            ]
+          },
+          "pickupAddress": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "dropoffAddress": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "tripId",
+          "completedAt",
+          "fare",
+          "commission",
+          "net",
+          "overtime",
+          "paymentMethod",
+          "pickupAddress",
+          "dropoffAddress"
+        ]
+      },
+      "Earnings": {
+        "type": "object",
+        "properties": {
+          "period": {
+            "type": "string",
+            "enum": [
+              "today",
+              "week",
+              "month"
+            ]
+          },
+          "from": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "to": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "trips": {
+            "type": "integer"
+          },
+          "gross": {
+            "type": "integer",
+            "description": "Fares of completed trips"
+          },
+          "commission": {
+            "type": "integer",
+            "description": "Money in santim (1 ETB = 100 santim)"
+          },
+          "net": {
+            "type": "integer",
+            "description": "gross − commission"
+          },
+          "overtime": {
+            "type": "integer",
+            "description": "Money in santim (1 ETB = 100 santim)"
+          },
+          "cashCollected": {
+            "type": "integer",
+            "description": "Fares the driver received in cash"
+          },
+          "paidToWallet": {
+            "type": "integer",
+            "description": "Net of non-cash trips credited to the wallet"
+          },
+          "wallet": {
+            "$ref": "#/components/schemas/WalletStatus"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EarningsItem"
+            }
+          }
+        },
+        "required": [
+          "period",
+          "from",
+          "to",
+          "trips",
+          "gross",
+          "commission",
+          "net",
+          "overtime",
+          "cashCollected",
+          "paidToWallet",
+          "wallet",
+          "items"
+        ]
+      },
+      "DepositRefund": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "paid",
+              "rejected",
+              "cancelled"
+            ]
+          },
+          "requestedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "amount": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "description": "Money in santim (1 ETB = 100 santim)"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when paid"
+          },
+          "reference": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rejectReason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "decidedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "requestedAt",
+          "note",
+          "amount",
+          "reference",
+          "rejectReason",
+          "decidedAt"
         ]
       },
       "TripOffer": {
@@ -4176,6 +4672,669 @@
         }
       }
     },
+    "/drivers/me/documents": {
+      "get": {
+        "operationId": "getDriversMeDocuments",
+        "tags": [
+          "Driver"
+        ],
+        "summary": "My documents and what approval still needs",
+        "description": "Drivers.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DriverDocuments"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not logged in or session expired (UNAUTHENTICATED, INVALID_TOKEN, ACCOUNT_INACTIVE)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed (FORBIDDEN, MISSING_PERMISSION)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict with the current state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid input (VALIDATION_FAILED with details) or a business rule",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "postDriversMeDocuments",
+        "tags": [
+          "Driver"
+        ],
+        "summary": "Start a document upload (signed URL)",
+        "description": "Drivers.\n\nThen PUT the file to `upload.url` with `upload.headers` within 10 minutes, then call submit. JPEG, PNG, WebP or PDF, max 10 MB.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "docType": {
+                    "type": "string",
+                    "enum": [
+                      "license",
+                      "photo",
+                      "national_id",
+                      "vehicle_libre",
+                      "vehicle_insurance",
+                      "vehicle_bolo"
+                    ]
+                  },
+                  "vehicleId": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "contentType": {
+                    "type": "string",
+                    "enum": [
+                      "image/jpeg",
+                      "image/png",
+                      "image/webp",
+                      "application/pdf"
+                    ]
+                  },
+                  "sizeBytes": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 10485760
+                  }
+                },
+                "required": [
+                  "docType",
+                  "contentType",
+                  "sizeBytes"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentUpload"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not logged in or session expired (UNAUTHENTICATED, INVALID_TOKEN, ACCOUNT_INACTIVE)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed (FORBIDDEN, MISSING_PERMISSION)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict with the current state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid input (VALIDATION_FAILED with details) or a business rule",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/drivers/me/documents/{id}/submit": {
+      "post": {
+        "operationId": "postDriversMeDocumentsByIdSubmit",
+        "tags": [
+          "Driver"
+        ],
+        "summary": "Submit an uploaded document for review",
+        "description": "Drivers.\n\nErrors: DOCUMENT_NOT_UPLOADED (file missing or wrong size), INVALID_TRANSITION.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "expiresOn": {
+                    "type": "string",
+                    "format": "date"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DriverDocument"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not logged in or session expired (UNAUTHENTICATED, INVALID_TOKEN, ACCOUNT_INACTIVE)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed (FORBIDDEN, MISSING_PERMISSION)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict with the current state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid input (VALIDATION_FAILED with details) or a business rule",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/drivers/me/earnings": {
+      "get": {
+        "operationId": "getDriversMeEarnings",
+        "tags": [
+          "Driver"
+        ],
+        "summary": "Earnings for today, this week or this month",
+        "description": "Drivers.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "period",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "today",
+                "week",
+                "month"
+              ],
+              "description": "Default: today"
+            },
+            "description": "Default: today"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Earnings"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not logged in or session expired (UNAUTHENTICATED, INVALID_TOKEN, ACCOUNT_INACTIVE)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed (FORBIDDEN, MISSING_PERMISSION)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict with the current state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid input (VALIDATION_FAILED with details) or a business rule",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/drivers/me/refunds": {
+      "get": {
+        "operationId": "getDriversMeRefunds",
+        "tags": [
+          "Driver"
+        ],
+        "summary": "My deposit refund requests",
+        "description": "Drivers.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/DepositRefund"
+                      }
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not logged in or session expired (UNAUTHENTICATED, INVALID_TOKEN, ACCOUNT_INACTIVE)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed (FORBIDDEN, MISSING_PERMISSION)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict with the current state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid input (VALIDATION_FAILED with details) or a business rule",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "postDriversMeRefunds",
+        "tags": [
+          "Driver"
+        ],
+        "summary": "Request my remaining deposit back",
+        "description": "Drivers.\n\nAllowed after the refund period (default 90 days from approval). Errors: REFUND_NOT_ELIGIBLE (details.eligibleFrom), NOTHING_TO_REFUND, REFUND_ALREADY_REQUESTED.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "note": {
+                    "type": "string",
+                    "maxLength": 300
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DepositRefund"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not logged in or session expired (UNAUTHENTICATED, INVALID_TOKEN, ACCOUNT_INACTIVE)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed (FORBIDDEN, MISSING_PERMISSION)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict with the current state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid input (VALIDATION_FAILED with details) or a business rule",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/drivers/me/refunds/{id}/cancel": {
+      "post": {
+        "operationId": "postDriversMeRefundsByIdCancel",
+        "tags": [
+          "Driver"
+        ],
+        "summary": "Cancel a pending refund request",
+        "description": "Drivers.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DepositRefund"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not logged in or session expired (UNAUTHENTICATED, INVALID_TOKEN, ACCOUNT_INACTIVE)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed (FORBIDDEN, MISSING_PERMISSION)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict with the current state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid input (VALIDATION_FAILED with details) or a business rule",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/admin/me": {
       "get": {
         "operationId": "getAdminMe",
@@ -4922,6 +6081,1039 @@
         }
       }
     },
+    "/admin/drivers": {
+      "get": {
+        "operationId": "getAdminDrivers",
+        "tags": [
+          "Back office"
+        ],
+        "summary": "Drivers with status, balance and documents to review",
+        "description": "Admins, or staff with: drivers.view or drivers.approve or drivers.commission or finance.deposits.record or finance.refunds.manage.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "pending",
+                "approved",
+                "rejected",
+                "suspended"
+              ]
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminObject"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not logged in or session expired (UNAUTHENTICATED, INVALID_TOKEN, ACCOUNT_INACTIVE)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed (FORBIDDEN, MISSING_PERMISSION)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict with the current state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid input (VALIDATION_FAILED with details) or a business rule",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/drivers/{id}": {
+      "get": {
+        "operationId": "getAdminDriversById",
+        "tags": [
+          "Back office"
+        ],
+        "summary": "Driver detail: documents, vehicles, wallet, refunds",
+        "description": "Admins, or staff with: drivers.view or drivers.approve or drivers.commission or finance.deposits.record or finance.refunds.manage.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminObject"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not logged in or session expired (UNAUTHENTICATED, INVALID_TOKEN, ACCOUNT_INACTIVE)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed (FORBIDDEN, MISSING_PERMISSION)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict with the current state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid input (VALIDATION_FAILED with details) or a business rule",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/drivers/{id}/commission": {
+      "put": {
+        "operationId": "putAdminDriversByIdCommission",
+        "tags": [
+          "Back office"
+        ],
+        "summary": "Set or clear a driver's custom commission",
+        "description": "Admins, or staff with: drivers.commission.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "commissionBps": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 10000
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "commissionBps"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminObject"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not logged in or session expired (UNAUTHENTICATED, INVALID_TOKEN, ACCOUNT_INACTIVE)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed (FORBIDDEN, MISSING_PERMISSION)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict with the current state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid input (VALIDATION_FAILED with details) or a business rule",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/drivers/{id}/deposits": {
+      "post": {
+        "operationId": "postAdminDriversByIdDeposits",
+        "tags": [
+          "Back office"
+        ],
+        "summary": "Record a deposit paid at the office",
+        "description": "Admins, or staff with: finance.deposits.record.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "amount": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0
+                  },
+                  "reference": {
+                    "type": "string",
+                    "minLength": 2,
+                    "maxLength": 100
+                  }
+                },
+                "required": [
+                  "amount",
+                  "reference"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminObject"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not logged in or session expired (UNAUTHENTICATED, INVALID_TOKEN, ACCOUNT_INACTIVE)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed (FORBIDDEN, MISSING_PERMISSION)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict with the current state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid input (VALIDATION_FAILED with details) or a business rule",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/documents/expiring": {
+      "get": {
+        "operationId": "getAdminDocumentsExpiring",
+        "tags": [
+          "Back office"
+        ],
+        "summary": "Approved documents expiring soon",
+        "description": "Admins, or staff with: drivers.view or drivers.approve.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "days",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "default": 30,
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 365
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminObject"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not logged in or session expired (UNAUTHENTICATED, INVALID_TOKEN, ACCOUNT_INACTIVE)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed (FORBIDDEN, MISSING_PERMISSION)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict with the current state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid input (VALIDATION_FAILED with details) or a business rule",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/documents/{id}/file": {
+      "get": {
+        "operationId": "getAdminDocumentsByIdFile",
+        "tags": [
+          "Back office"
+        ],
+        "summary": "Short-lived link to view a document",
+        "description": "Admins, or staff with: drivers.view or drivers.approve.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminObject"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not logged in or session expired (UNAUTHENTICATED, INVALID_TOKEN, ACCOUNT_INACTIVE)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed (FORBIDDEN, MISSING_PERMISSION)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict with the current state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid input (VALIDATION_FAILED with details) or a business rule",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/documents/{id}/review": {
+      "post": {
+        "operationId": "postAdminDocumentsByIdReview",
+        "tags": [
+          "Back office"
+        ],
+        "summary": "Approve or reject a document",
+        "description": "Admins, or staff with: drivers.approve.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "decision": {
+                    "type": "string",
+                    "enum": [
+                      "approved",
+                      "rejected"
+                    ]
+                  },
+                  "reason": {
+                    "type": "string",
+                    "maxLength": 300
+                  },
+                  "expiresOn": {
+                    "type": "string",
+                    "format": "date"
+                  }
+                },
+                "required": [
+                  "decision"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminObject"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not logged in or session expired (UNAUTHENTICATED, INVALID_TOKEN, ACCOUNT_INACTIVE)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed (FORBIDDEN, MISSING_PERMISSION)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict with the current state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid input (VALIDATION_FAILED with details) or a business rule",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/refunds": {
+      "get": {
+        "operationId": "getAdminRefunds",
+        "tags": [
+          "Back office"
+        ],
+        "summary": "Deposit refund requests",
+        "description": "Admins, or staff with: finance.refunds.manage.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "pending",
+                "paid",
+                "rejected",
+                "cancelled"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminObject"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not logged in or session expired (UNAUTHENTICATED, INVALID_TOKEN, ACCOUNT_INACTIVE)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed (FORBIDDEN, MISSING_PERMISSION)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict with the current state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid input (VALIDATION_FAILED with details) or a business rule",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/refunds/{id}/pay": {
+      "post": {
+        "operationId": "postAdminRefundsByIdPay",
+        "tags": [
+          "Back office"
+        ],
+        "summary": "Pay out the driver's remaining balance",
+        "description": "Admins, or staff with: finance.refunds.manage.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "reference": {
+                    "type": "string",
+                    "minLength": 2,
+                    "maxLength": 100
+                  }
+                },
+                "required": [
+                  "reference"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminObject"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not logged in or session expired (UNAUTHENTICATED, INVALID_TOKEN, ACCOUNT_INACTIVE)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed (FORBIDDEN, MISSING_PERMISSION)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict with the current state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid input (VALIDATION_FAILED with details) or a business rule",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/refunds/{id}/reject": {
+      "post": {
+        "operationId": "postAdminRefundsByIdReject",
+        "tags": [
+          "Back office"
+        ],
+        "summary": "Reject a refund request",
+        "description": "Admins, or staff with: finance.refunds.manage.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 300
+                  }
+                },
+                "required": [
+                  "reason"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminObject"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not logged in or session expired (UNAUTHENTICATED, INVALID_TOKEN, ACCOUNT_INACTIVE)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed (FORBIDDEN, MISSING_PERMISSION)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict with the current state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid input (VALIDATION_FAILED with details) or a business rule",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/admin/trips": {
       "get": {
         "operationId": "getAdminTrips",
@@ -5520,6 +7712,28 @@
               "schema": {
                 "type": "object",
                 "properties": {
+                  "defaultCommissionBps": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 10000
+                  },
+                  "minDeposit": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "lowBalanceThreshold": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "lowBalanceWarning": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "refundAfterDays": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 3650
+                  },
                   "overtimeCapBps": {
                     "type": "integer",
                     "minimum": 0,
@@ -5694,6 +7908,116 @@
         }
       }
     },
+    "/files/{key}": {
+      "put": {
+        "operationId": "putFilesByKey",
+        "tags": [
+          "Files (development)"
+        ],
+        "summary": "Upload to a signed URL (local storage only)",
+        "description": "Anyone.\n\nDevelopment stand-in for S3 presigned URLs. Use the URL returned by POST /drivers/me/documents as-is. Errors: INVALID_SIGNATURE, UPLOAD_MISMATCH.",
+        "security": [],
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No content"
+          },
+          "409": {
+            "description": "Conflict with the current state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid input (VALIDATION_FAILED with details) or a business rule",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests (RATE_LIMITED)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "operationId": "getFilesByKey",
+        "tags": [
+          "Files (development)"
+        ],
+        "summary": "Download from a signed URL (local storage only)",
+        "description": "Anyone.",
+        "security": [],
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No content"
+          },
+          "409": {
+            "description": "Conflict with the current state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid input (VALIDATION_FAILED with details) or a business rule",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests (RATE_LIMITED)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/admin/staff": {
       "get": {
         "operationId": "getAdminStaff",
@@ -5798,7 +8122,7 @@
                     "maxLength": 100
                   },
                   "permissions": {
-                    "maxItems": 16,
+                    "maxItems": 19,
                     "type": "array",
                     "items": {
                       "type": "string",
@@ -5809,11 +8133,14 @@
                         "users.reset_password",
                         "drivers.view",
                         "drivers.approve",
+                        "drivers.commission",
                         "trips.view",
                         "trips.cancel",
                         "finance.daybook.view",
                         "finance.wallets.view",
                         "finance.wallets.adjust",
+                        "finance.deposits.record",
+                        "finance.refunds.manage",
                         "pricing.manage",
                         "zones.manage",
                         "sos.view",
@@ -5927,7 +8254,7 @@
                 "type": "object",
                 "properties": {
                   "permissions": {
-                    "maxItems": 16,
+                    "maxItems": 19,
                     "type": "array",
                     "items": {
                       "type": "string",
@@ -5938,11 +8265,14 @@
                         "users.reset_password",
                         "drivers.view",
                         "drivers.approve",
+                        "drivers.commission",
                         "trips.view",
                         "trips.cancel",
                         "finance.daybook.view",
                         "finance.wallets.view",
                         "finance.wallets.adjust",
+                        "finance.deposits.record",
+                        "finance.refunds.manage",
                         "pricing.manage",
                         "zones.manage",
                         "sos.view",

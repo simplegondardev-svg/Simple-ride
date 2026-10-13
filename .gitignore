@@ -12,3 +12,4 @@ next-env.d.ts
 dump.rdb
 apps/web/public/maplibre/
 build/
+apps/api/.storage/

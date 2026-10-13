@@ -3,13 +3,147 @@ import { z } from "zod";
 import { requireRole } from "../../auth/middleware.js";
 import { withContext } from "../../db/context.js";
 import { AppError } from "../../lib/errors.js";
-import { latLng } from "../../lib/schemas.js";
-import { acceptanceRate } from "../trips/service.js";
+import { latLng, uuidParam } from "../../lib/schemas.js";
+import { notFound } from "../../lib/errors.js";
+import { acceptanceRate, requireFunded } from "../trips/service.js";
+import {
+  ALL_DOC_TYPES, ALLOWED_CONTENT_TYPES, DOC_COLUMNS, MAX_DOC_BYTES, requirements, startUpload, submitDocument,
+} from "./documents.js";
+import { balances, moneySettings, walletStatus } from "./money.js";
 import { recordPing, setAvailable, setUnavailable } from "./presence.js";
 
 export const driversRouter = Router();
 driversRouter.use(requireRole("driver"));
 
+
+// ───────────────────────── Documents ─────────────────────────
+
+driversRouter.get("/me/documents", async (req, res) => {
+  const data = await withContext(req.ctx, async (db) => {
+    const { rows: documents } = await db.query(
+      `SELECT ${DOC_COLUMNS} FROM driver_documents d
+        WHERE d.driver_id = app.uid() AND d.status <> 'replaced' ORDER BY d.uploaded_at DESC`,
+    );
+    const { rows: [v] } = await db.query(
+      "SELECT id FROM vehicles WHERE driver_id = app.uid() ORDER BY is_current DESC, created_at DESC LIMIT 1",
+    );
+    // What still blocks approval: personal documents + those for the driver's (current or newest) vehicle.
+    return { documents, required: await requirements(db, req.ctx.userId!, v?.id ?? null) };
+  });
+  res.json(data);
+});
+
+/** Step 1: get a signed URL to upload the file to (valid 10 minutes). */
+driversRouter.post("/me/documents", async (req, res) => {
+  const body = startDocumentBody.parse(req.body);
+  res.status(201).json(await startUpload(req.ctx, body));
+});
+
+/** Step 3: after uploading, submit for review (with the expiry date printed on it). */
+driversRouter.post("/me/documents/:id/submit", async (req, res) => {
+  const { id } = uuidParam.parse(req.params);
+  const { expiresOn } = submitDocumentBody.parse(req.body ?? {});
+  res.json(await submitDocument(req.ctx, id, expiresOn));
+});
+
+// ───────────────────────── Earnings ─────────────────────────
+
+/** Completed trips, fares and commission for today, this week (Mon–Sun) or this month, Addis Ababa time. */
+driversRouter.get("/me/earnings", async (req, res) => {
+  const { period } = earningsQuery.parse(req.query);
+  const data = await withContext(req.ctx, async (db) => {
+    const { rows: [range] } = await db.query(
+      `SELECT date_trunc($1, now() AT TIME ZONE 'Africa/Addis_Ababa') AT TIME ZONE 'Africa/Addis_Ababa' AS "from",
+              now() AS "to"`,
+      [period === "today" ? "day" : period],
+    );
+    const { rows: [t] } = await db.query(
+      `SELECT count(*)::int AS trips,
+              coalesce(sum(final_fare), 0)::bigint AS gross,
+              coalesce(sum(commission_amount), 0)::bigint AS commission,
+              coalesce(sum(overtime_amount), 0)::bigint AS overtime,
+              coalesce(sum(final_fare) FILTER (WHERE payment_method = 'cash'), 0)::bigint AS "cashCollected",
+              coalesce(sum(final_fare - commission_amount) FILTER (WHERE payment_method <> 'cash'), 0)::bigint AS "paidToWallet"
+         FROM trips WHERE driver_id = app.uid() AND status = 'completed' AND completed_at >= $1`,
+      [range.from],
+    );
+    const { rows: items } = await db.query(
+      `SELECT id AS "tripId", completed_at AS "completedAt", final_fare AS fare, commission_amount AS commission,
+              final_fare - commission_amount AS net, overtime_amount AS overtime, payment_method AS "paymentMethod",
+              pickup_address AS "pickupAddress", dropoff_address AS "dropoffAddress"
+         FROM trips WHERE driver_id = app.uid() AND status = 'completed' AND completed_at >= $1
+        ORDER BY completed_at DESC LIMIT 100`,
+      [range.from],
+    );
+    const settings = await moneySettings(db);
+    const balance = (await balances(db, [req.ctx.userId!])).get(req.ctx.userId!) ?? 0;
+    return {
+      period, from: range.from, to: range.to,
+      ...t, net: t.gross - t.commission,
+      wallet: walletStatus(balance, settings),
+      items,
+    };
+  });
+  res.json(data);
+});
+
+// ───────────────────────── Deposit refunds ─────────────────────────
+
+const REFUND_COLUMNS = `id, status, requested_at AS "requestedAt", note, amount, reference,
+  reject_reason AS "rejectReason", decided_at AS "decidedAt"`;
+
+driversRouter.get("/me/refunds", async (req, res) => {
+  const rows = await withContext(req.ctx, async (db) =>
+    (await db.query(`SELECT ${REFUND_COLUMNS} FROM deposit_refunds WHERE driver_id = app.uid() ORDER BY requested_at DESC`)).rows,
+  );
+  res.json({ data: rows });
+});
+
+/** Ask for the remaining deposit back. Allowed once the driver has been approved for the refund period (default 90 days). */
+driversRouter.post("/me/refunds", async (req, res) => {
+  const { note } = refundRequestBody.parse(req.body ?? {});
+  const refund = await withContext(req.ctx, async (db) => {
+    const settings = await moneySettings(db);
+    const { rows: [p] } = await db.query(
+      `SELECT approved_at, approved_at + make_interval(days => $1) AS eligible_from,
+              approved_at + make_interval(days => $1) <= now() AS eligible
+         FROM driver_profiles WHERE user_id = app.uid()`,
+      [settings.refundAfterDays],
+    );
+    if (!p?.approved_at || !p.eligible) {
+      throw new AppError(422, "REFUND_NOT_ELIGIBLE",
+        `Deposits are refundable ${settings.refundAfterDays} days after approval`,
+        { eligibleFrom: p?.eligible_from ?? null, refundAfterDays: settings.refundAfterDays });
+    }
+    const balance = (await balances(db, [req.ctx.userId!])).get(req.ctx.userId!) ?? 0;
+    if (balance <= 0) throw new AppError(422, "NOTHING_TO_REFUND", "Your deposit balance is zero", { balance });
+    try {
+      const { rows: [r] } = await db.query(
+        `INSERT INTO deposit_refunds (driver_id, note) VALUES (app.uid(), $1) RETURNING ${REFUND_COLUMNS}`,
+        [note ?? null],
+      );
+      return r;
+    } catch (err: any) {
+      if (err.code === "23505") throw new AppError(409, "REFUND_ALREADY_REQUESTED", "You already have a pending refund request");
+      throw err;
+    }
+  });
+  res.status(201).json(refund);
+});
+
+driversRouter.post("/me/refunds/:id/cancel", async (req, res) => {
+  const { id } = uuidParam.parse(req.params);
+  const refund = await withContext(req.ctx, async (db) => {
+    const { rows: [r] } = await db.query(
+      `UPDATE deposit_refunds SET status = 'cancelled' WHERE id = $1 AND driver_id = app.uid() AND status = 'pending'
+       RETURNING ${REFUND_COLUMNS}`,
+      [id],
+    );
+    if (!r) throw notFound("Pending refund request");
+    return r;
+  });
+  res.json(refund);
+});
 
 // Request schemas (exported: the OpenAPI spec is built from them).
 export const driverProfileBody = z
@@ -28,12 +162,26 @@ export const addVehicleBody = z
     year: z.number().int().min(1970).max(2100).optional(),
   });
 export const goOnlineBody = z.object({ location: latLng });
+export const startDocumentBody = z.object({
+  docType: z.enum(ALL_DOC_TYPES),
+  vehicleId: z.uuid().optional().describe("Required for vehicle_* documents"),
+  contentType: z.enum(ALLOWED_CONTENT_TYPES),
+  sizeBytes: z.number().int().min(1).max(MAX_DOC_BYTES).describe("Exact file size; the upload must match"),
+});
+export const submitDocumentBody = z.object({
+  expiresOn: z.iso.date().optional().describe("Required for license, vehicle_insurance and vehicle_bolo"),
+});
+export const earningsQuery = z.object({ period: z.enum(["today", "week", "month"]).default("today") });
+export const refundRequestBody = z.object({
+  note: z.string().trim().max(300).optional().describe("e.g. where to send the money"),
+});
 export const locationBody = latLng.extend({ heading: z.number().min(0).max(360).optional() });
 
 driversRouter.get("/me", async (req, res) => {
   const data = await withContext(req.ctx, async (db) => {
     const { rows: [profile] } = await db.query(
-      `SELECT approval_status AS "approvalStatus", license_number AS "licenseNumber",
+      `SELECT approval_status AS "approvalStatus", suspended_reason AS "suspendedReason",
+              commission_bps AS "customCommissionBps", license_number AS "licenseNumber",
               license_expires_on AS "licenseExpiresOn", availability,
               rating_avg AS "ratingAvg", rating_count AS "ratingCount"
          FROM driver_profiles WHERE user_id = app.uid()`,
@@ -43,8 +191,15 @@ driversRouter.get("/me", async (req, res) => {
               color, year, status, is_current AS "isCurrent"
          FROM vehicles WHERE driver_id = app.uid() ORDER BY created_at`,
     );
-    // Share of recent offers accepted (null until the driver has had offers).
-    return { ...profile, acceptanceRate: await acceptanceRate(db, req.ctx.userId!), vehicles };
+    const settings = await moneySettings(db);
+    const balance = (await balances(db, [req.ctx.userId!])).get(req.ctx.userId!) ?? 0;
+    return {
+      ...profile,
+      // Share of recent offers accepted (null until the driver has had offers).
+      acceptanceRate: await acceptanceRate(db, req.ctx.userId!),
+      wallet: walletStatus(balance, settings),
+      vehicles,
+    };
   });
   res.json(data);
 });
@@ -95,6 +250,7 @@ driversRouter.post("/me/online", async (req, res) => {
     }
     if (!row.category_code) throw new AppError(422, "NO_ACTIVE_VEHICLE", "No approved vehicle selected");
     if (row.availability === "on_trip") throw new AppError(409, "ON_TRIP", "Finish your current trip first");
+    await requireFunded(db, req.ctx.userId!);
     await db.query("UPDATE driver_profiles SET availability = 'online' WHERE user_id = app.uid()");
     return row.category_code as string;
   });

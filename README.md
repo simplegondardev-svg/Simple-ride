@@ -65,6 +65,9 @@ You need Postgres and Redis running and migrations applied. The suite covers:
   change and support resets, hashes unreadable even by admins, session lengths.
 - **`staff.test.ts`**: staff see and change only what they were granted, can't grant themselves anything, and are
   locked out the moment they're suspended; plus the admin → staff flow over HTTP.
+- **`onboarding.test.ts`**: documents (signed uploads, review, expiry auto-suspend), approval needs documents,
+  deposits and the low-balance block, custom commission, earnings, refunds, and who may do each.
+- **`storage-s3.test.ts`**: presigned upload and download against a real S3 API (runs when `TEST_S3_ENDPOINT` is set).
 - **`dispatch.test.ts`**: offer rounds, decline → next driver, driver backing out, overtime fares, sweeper, trip guard.
 - **`openapi.test.ts`, `contract.test.ts`, `errors.test.ts`**: the spec covers every route and is valid; real
   responses match the documented models; every error code is in the catalogue.

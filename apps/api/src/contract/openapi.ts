@@ -37,6 +37,7 @@ interface Operation {
 }
 
 const id = uuidParam;
+const fileKey = z.object({ key: z.string().describe("Storage key, as in the signed URL") });
 
 export const operations: Operation[] = [
   // ── Auth
@@ -116,6 +117,23 @@ export const operations: Operation[] = [
     body: drv.locationBody, ok: [204, null] },
   { method: "get", path: "/drivers/me/offers", tag: "Driver", access: "driver", summary: "Open offers",
     ok: [200, z.object({ data: z.array(R.TripOffer) })] },
+  { method: "get", path: "/drivers/me/documents", tag: "Driver", access: "driver", summary: "My documents and what approval still needs",
+    ok: [200, R.DriverDocuments] },
+  { method: "post", path: "/drivers/me/documents", tag: "Driver", access: "driver", summary: "Start a document upload (signed URL)",
+    body: drv.startDocumentBody, ok: [201, R.DocumentUpload],
+    description: "Then PUT the file to `upload.url` with `upload.headers` within 10 minutes, then call submit. JPEG, PNG, WebP or PDF, max 10 MB." },
+  { method: "post", path: "/drivers/me/documents/:id/submit", tag: "Driver", access: "driver", summary: "Submit an uploaded document for review",
+    params: id, body: drv.submitDocumentBody, ok: [200, R.DriverDocument],
+    description: "Errors: DOCUMENT_NOT_UPLOADED (file missing or wrong size), INVALID_TRANSITION." },
+  { method: "get", path: "/drivers/me/earnings", tag: "Driver", access: "driver", summary: "Earnings for today, this week or this month",
+    query: drv.earningsQuery, ok: [200, R.Earnings] },
+  { method: "get", path: "/drivers/me/refunds", tag: "Driver", access: "driver", summary: "My deposit refund requests",
+    ok: [200, z.object({ data: z.array(R.DepositRefund) })] },
+  { method: "post", path: "/drivers/me/refunds", tag: "Driver", access: "driver", summary: "Request my remaining deposit back",
+    body: drv.refundRequestBody, ok: [201, R.DepositRefund],
+    description: "Allowed after the refund period (default 90 days from approval). Errors: REFUND_NOT_ELIGIBLE (details.eligibleFrom), NOTHING_TO_REFUND, REFUND_ALREADY_REQUESTED." },
+  { method: "post", path: "/drivers/me/refunds/:id/cancel", tag: "Driver", access: "driver", summary: "Cancel a pending refund request",
+    params: id, ok: [200, R.DepositRefund] },
 
   // ── Back office (web dashboard)
   { method: "get", path: "/admin/me", tag: "Back office", access: "backoffice", summary: "Role and permissions of the signed-in staff member", ok: [200, R.AdminObject] },
@@ -126,6 +144,16 @@ export const operations: Operation[] = [
   { method: "post", path: "/admin/users/:id/reset-password", tag: "Back office", access: "backoffice", permission: ["users.reset_password"], summary: "Issue a temporary password", params: id, ok: [200, R.AdminObject] },
   { method: "get", path: "/admin/drivers/pending", tag: "Back office", access: "backoffice", permission: ["drivers.view", "drivers.approve"], summary: "Driver onboarding queue", ok: [200, R.AdminObject] },
   { method: "post", path: "/admin/drivers/:id/review", tag: "Back office", access: "backoffice", permission: ["drivers.approve"], summary: "Approve or reject a driver and vehicle", params: id, body: adm.driverReviewBody, ok: [200, R.AdminObject] },
+  { method: "get", path: "/admin/drivers", tag: "Back office", access: "backoffice", permission: ["drivers.view", "drivers.approve", "drivers.commission", "finance.deposits.record", "finance.refunds.manage"], summary: "Drivers with status, balance and documents to review", query: adm.adminDriversQuery, ok: [200, R.AdminObject] },
+  { method: "get", path: "/admin/drivers/:id", tag: "Back office", access: "backoffice", permission: ["drivers.view", "drivers.approve", "drivers.commission", "finance.deposits.record", "finance.refunds.manage"], summary: "Driver detail: documents, vehicles, wallet, refunds", params: id, ok: [200, R.AdminObject] },
+  { method: "put", path: "/admin/drivers/:id/commission", tag: "Back office", access: "backoffice", permission: ["drivers.commission"], summary: "Set or clear a driver's custom commission", params: id, body: adm.driverCommissionBody, ok: [200, R.AdminObject] },
+  { method: "post", path: "/admin/drivers/:id/deposits", tag: "Back office", access: "backoffice", permission: ["finance.deposits.record"], summary: "Record a deposit paid at the office", params: id, body: adm.depositBody, ok: [201, R.AdminObject] },
+  { method: "get", path: "/admin/documents/expiring", tag: "Back office", access: "backoffice", permission: ["drivers.view", "drivers.approve"], summary: "Approved documents expiring soon", query: adm.expiringQuery, ok: [200, R.AdminObject] },
+  { method: "get", path: "/admin/documents/:id/file", tag: "Back office", access: "backoffice", permission: ["drivers.view", "drivers.approve"], summary: "Short-lived link to view a document", params: id, ok: [200, R.AdminObject] },
+  { method: "post", path: "/admin/documents/:id/review", tag: "Back office", access: "backoffice", permission: ["drivers.approve"], summary: "Approve or reject a document", params: id, body: adm.documentReviewBody, ok: [200, R.AdminObject] },
+  { method: "get", path: "/admin/refunds", tag: "Back office", access: "backoffice", permission: ["finance.refunds.manage"], summary: "Deposit refund requests", query: adm.refundsQuery, ok: [200, R.AdminObject] },
+  { method: "post", path: "/admin/refunds/:id/pay", tag: "Back office", access: "backoffice", permission: ["finance.refunds.manage"], summary: "Pay out the driver's remaining balance", params: id, body: adm.refundPayBody, ok: [200, R.AdminObject] },
+  { method: "post", path: "/admin/refunds/:id/reject", tag: "Back office", access: "backoffice", permission: ["finance.refunds.manage"], summary: "Reject a refund request", params: id, body: adm.refundRejectBody, ok: [200, R.AdminObject] },
   { method: "get", path: "/admin/trips", tag: "Back office", access: "backoffice", permission: ["trips.view"], summary: "Recent trips", query: adm.adminTripsQuery, ok: [200, R.AdminObject] },
   { method: "post", path: "/admin/trips/:id/cancel", tag: "Back office", access: "backoffice", permission: ["trips.cancel"], summary: "Cancel a trip", params: id, body: adm.adminCancelTripBody, ok: [200, R.AdminObject] },
   { method: "get", path: "/admin/finance/daybook", tag: "Back office", access: "backoffice", permission: ["finance.daybook.view"], summary: "Day book for one Addis Ababa day", query: adm.daybookQuery, ok: [200, R.AdminObject] },
@@ -134,6 +162,10 @@ export const operations: Operation[] = [
   { method: "get", path: "/admin/settings", tag: "Back office", access: "backoffice", permission: ["pricing.manage"], summary: "Business settings", ok: [200, R.AdminObject] },
   { method: "patch", path: "/admin/settings", tag: "Back office", access: "backoffice", permission: ["pricing.manage"], summary: "Change business settings", body: adm.settingsBody, ok: [200, R.AdminObject] },
   { method: "get", path: "/admin/audit", tag: "Back office", access: "backoffice", permission: ["audit.view"], summary: "Audit log", query: page, ok: [200, R.AdminObject] },
+  { method: "put", path: "/files/*key", tag: "Files (development)", access: "public", summary: "Upload to a signed URL (local storage only)",
+    params: fileKey, ok: [200, null], description: "Development stand-in for S3 presigned URLs. Use the URL returned by POST /drivers/me/documents as-is. Errors: INVALID_SIGNATURE, UPLOAD_MISMATCH." },
+  { method: "get", path: "/files/*key", tag: "Files (development)", access: "public", summary: "Download from a signed URL (local storage only)",
+    params: fileKey, ok: [200, null] },
   { method: "get", path: "/admin/staff", tag: "Back office", access: "admin", summary: "Staff and their permissions", ok: [200, R.AdminObject] },
   { method: "post", path: "/admin/staff", tag: "Back office", access: "admin", summary: "Create a staff member (returns a temporary password once)", body: adm.createStaffBody, ok: [201, R.AdminObject] },
   { method: "put", path: "/admin/staff/:id/permissions", tag: "Back office", access: "admin", summary: "Replace a staff member's permissions", params: id, body: adm.staffPermissionsBody, ok: [200, R.AdminObject] },
@@ -185,7 +217,7 @@ const ERRORS: Record<number, string> = {
 export function buildOpenApi() {
   const paths: Record<string, any> = {};
   for (const op of operations) {
-    const path = op.path.replace(/:(\w+)/g, "{$1}");
+    const path = op.path.replace(/[:*](\w+)/g, "{$1}");
     const parameters: any[] = [];
     for (const [where, schema] of [["path", op.params], ["query", op.query]] as const) {
       if (!schema) continue;
@@ -261,7 +293,7 @@ export function buildOpenApi() {
 
 function operationId(op: Operation) {
   const words = `${op.method} ${op.path}`
-    .replace(/:(\w+)/g, "by $1")
+    .replace(/[:*](\w+)/g, "by $1")
     .split(/[^a-zA-Z0-9]+/)
     .filter(Boolean);
   return words.map((w, i) => (i === 0 ? w.toLowerCase() : w[0]!.toUpperCase() + w.slice(1))).join("");

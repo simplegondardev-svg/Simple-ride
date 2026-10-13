@@ -16,6 +16,8 @@
     "openapi": "NODE_ENV=test tsx --env-file-if-exists=.env scripts/export-openapi.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1151.0",
+    "@aws-sdk/s3-request-presigner": "^3.1151.0",
     "cors": "^2.8.6",
     "express": "^5.3.0",
     "helmet": "^8.3.0",

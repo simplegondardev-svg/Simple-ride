@@ -7,7 +7,7 @@ import * as R from "../src/contract/responses.js";
 import { SYSTEM, withContext } from "../src/db/context.js";
 import { pool } from "../src/db/pool.js";
 import { redis } from "../src/lib/redis.js";
-import { BOLE, PASSWORD, PIASSA, randomPhone } from "./helpers.js";
+import { BOLE, fundDriver, PASSWORD, PIASSA, randomPhone } from "./helpers.js";
 
 /**
  * Real responses vs the documented response models (what the Dart client is
@@ -90,6 +90,7 @@ describe("responses match the documented models", () => {
       await db.query("UPDATE driver_profiles SET approval_status = 'approved' WHERE user_id = $1", [driver.user.id]);
       await db.query("UPDATE vehicles SET status = 'approved', is_current = true WHERE id = $1", [v.body.id]);
     });
+    await fundDriver(driver.user.id);
 
     const me = await request(app).get("/api/v1/drivers/me").set(bearer(driver.accessToken)).expect(200);
     conforms(R.DriverMe, me.body, "GET /drivers/me");

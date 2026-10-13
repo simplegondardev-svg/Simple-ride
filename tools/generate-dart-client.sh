@@ -20,7 +20,9 @@ if [ ! -f "$JAR" ]; then
 fi
 
 rm -rf "$OUT"
-java -jar "$JAR" generate -i "$ROOT/docs/openapi.json" -g dart-dio -o "$OUT" \
+# `format: date` fields (e.g. licenseExpiresOn) stay plain "YYYY-MM-DD" strings: with
+# dateLibrary=core they would become DateTime and be sent as full timestamps, which the API rejects.
+java -jar "$JAR" generate -i "$ROOT/docs/openapi.json" -g dart-dio -o "$OUT" --type-mappings=date=String \
   --additional-properties=pubName=simple_ride_api,serializationLibrary=json_serializable,dateLibrary=core
 
 # The generator declares Dart >= 3.5, but current json_serializable emits

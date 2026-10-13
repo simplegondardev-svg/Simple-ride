@@ -13,6 +13,7 @@ import { redis } from "./lib/redis.js";
 import { adminRouter } from "./modules/admin/routes.js";
 import { catalogRouter } from "./modules/catalog/routes.js";
 import { driversRouter } from "./modules/drivers/routes.js";
+import { filesRouter } from "./modules/files/routes.js";
 import { geoRouter } from "./modules/geo/routes.js";
 import { tripsRouter } from "./modules/trips/routes.js";
 import { usersRouter } from "./modules/users/routes.js";
@@ -26,6 +27,7 @@ export const apiRouters: [string, express.Router][] = [
   ["/drivers", driversRouter],
   ["/trips", tripsRouter],
   ["/admin", adminRouter],
+  ["/files", filesRouter],
 ];
 
 export function createApp() {

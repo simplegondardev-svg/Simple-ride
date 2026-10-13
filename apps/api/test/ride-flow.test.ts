@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { pool } from "../src/db/pool.js";
 import { redis } from "../src/lib/redis.js";
-import { BOLE, makeBackoffice, PASSWORD, PIASSA, randomPhone } from "./helpers.js";
+import { BOLE, makeBackoffice, PASSWORD, PIASSA, randomPhone, uploadRequiredDocuments } from "./helpers.js";
 
 const app = createApp();
 
@@ -64,7 +64,7 @@ describe("full ride", () => {
   let ridePin: string;
   let fare: number;
 
-  it("driver onboarding: profile, vehicle, admin approval, go online", async () => {
+  it("driver onboarding: profile, vehicle, documents, admin approval, deposit, go online", async () => {
     const d = bearer(driver.accessToken);
     await request(app).put("/api/v1/drivers/me/profile").set(d)
       .send({ licenseNumber: "AA-123456", licenseExpiresOn: "2030-01-01" }).expect(204);
@@ -76,8 +76,27 @@ describe("full ride", () => {
     const blocked = await request(app).post("/api/v1/drivers/me/online").set(d).send({ location: BOLE });
     expect(blocked.body.error.code).toBe("DRIVER_NOT_APPROVED");
 
+    // Approval needs the documents first.
+    const early = await request(app).post(`/api/v1/admin/drivers/${driver.user.id}/review`).set(bearer(admin.accessToken))
+      .send({ decision: "approved", vehicleId: v.body.id }).expect(422);
+    expect(early.body.error.code).toBe("DOCUMENTS_INCOMPLETE");
+    expect(early.body.error.details.missing).toHaveLength(5);
+
+    const docs = await uploadRequiredDocuments(app, driver.accessToken, v.body.id);
+    for (const id of docs) {
+      await request(app).post(`/api/v1/admin/documents/${id}/review`).set(bearer(admin.accessToken))
+        .send({ decision: "approved" }).expect(200);
+    }
     await request(app).post(`/api/v1/admin/drivers/${driver.user.id}/review`).set(bearer(admin.accessToken))
       .send({ decision: "approved", vehicleId: v.body.id }).expect(200);
+
+    // Approved, but no deposit yet.
+    const unfunded = await request(app).post("/api/v1/drivers/me/online").set(d).send({ location: BOLE }).expect(402);
+    expect(unfunded.body.error.code).toBe("DEPOSIT_REQUIRED");
+
+    // Driver pays 10,000 ETB at the office; staff record it.
+    await request(app).post(`/api/v1/admin/drivers/${driver.user.id}/deposits`).set(bearer(admin.accessToken))
+      .send({ amount: 1_000_000, reference: "RCPT-001" }).expect(201);
 
     // Driver is ~300 m from the pickup
     await request(app).post("/api/v1/drivers/me/online").set(d)
@@ -154,9 +173,9 @@ describe("full ride", () => {
     expect(done.body.paymentStatus).toBe("paid");
   });
 
-  it("cash trip: 10% commission debited from the driver's wallet", async () => {
+  it("cash trip: 10% commission debited from the driver's deposit", async () => {
     const res = await request(app).get("/api/v1/users/me/wallet").set(bearer(driver.accessToken)).expect(200);
-    expect(res.body.balance).toBe(-Math.round(fare * 0.1));
+    expect(res.body.balance).toBe(1_000_000 - Math.round(fare * 0.1));
     expect(res.body.transactions[0].kind).toBe("commission");
   });
 

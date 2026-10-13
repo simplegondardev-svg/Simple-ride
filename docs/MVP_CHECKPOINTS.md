@@ -123,21 +123,37 @@ the trade-off for short waits; revisit if drivers complain.
 
 **Goal:** drivers sign up and get approved properly, and can see what they've earned.
 
-- [ ] Document uploads (licence, vehicle ownership booklet "libre", insurance, annual inspection "bolo", photo) to S3-compatible storage with signed URLs. Expiry dates stored.
-- [ ] Back office: document review screen, approve or reject with a reason, expiry alerts, auto-suspend on expiry.
-- [ ] Driver earnings API: today, this week, per trip, commission, wallet balance.
-- [ ] **Prepaid commission deposit:** a new driver can't go online until they deposit at least the admin-set
+- [x] Document uploads (licence, vehicle ownership booklet "libre", insurance, annual inspection "bolo", photo) to S3-compatible storage with signed URLs. Expiry dates stored.
+- [x] Back office: document review screen, approve or reject with a reason, expiry alerts, auto-suspend on expiry.
+- [x] Driver earnings API: today, this week, per trip, commission, wallet balance.
+- [x] **Prepaid commission deposit:** a new driver can't go online until they deposit at least the admin-set
       minimum (default 10,000 ETB). Commission is deducted from it trip by trip.
-- [ ] **Low balance:** warn early; below the admin-set threshold the driver can finish the current trip but
+- [x] **Low balance:** warn early; below the admin-set threshold the driver can finish the current trip but
       can't go online or receive offers until they deposit again (at least the minimum deposit).
-- [ ] **Custom commission per driver** set by admin (overrides the 10% default), recorded in the audit log.
-- [ ] **Deposit refund:** remaining balance refundable on request once the driver has been with us for the
+- [x] **Custom commission per driver** set by admin (overrides the 10% default), recorded in the audit log.
+- [x] **Deposit refund:** remaining balance refundable on request once the driver has been with us for the
       admin-set period (default 3 months from approval); recorded as a `payout` in the ledger and day book.
-- [ ] Deposits and top-ups at the office: staff record cash received with a dedicated "deposit" entry
+- [x] Deposits and top-ups at the office: staff record cash received with a dedicated "deposit" entry
       (not a manual adjustment), and it appears in the day book.
-- [ ] Admin settings screen for: minimum deposit, low-balance threshold, refund period, overtime cap, default commission.
+- [x] Admin settings screen for: minimum deposit, low-balance threshold, refund period, overtime cap, default commission.
 
 **Exit:** a new driver goes from sign-up to approved and online using only the app and back office, and their earnings match the day book.
+
+✅ **CP5 done (Oct 2026).** Exit check, run against a freshly migrated database:
+
+- **Driver side** through the generated Dart client (standing in for the Flutter driver app). The driver registers, saves the profile, adds a vehicle, uploads all 5 documents straight to storage with signed URLs, and submits them. Going online is refused with `DRIVER_NOT_APPROVED`.
+- **Staff side** in a real browser (Chromium/Playwright) with no API calls. Staff:
+  - open the driver from the Drivers list and view a document through a signed URL;
+  - approve the 5 documents (Approve driver stays disabled until then) and approve the driver;
+  - see a 500 ETB deposit refused ("below the minimum"), then record 10,000 ETB against receipt CBE-889214;
+  - set an 8% custom commission and change the refund period in Settings.
+- The driver goes online, a rider books a 205 ETB trip, and the driver accepts, arrives, starts with the PIN and completes it.
+- The driver's earnings show 205.00 gross, 16.40 commission (8%) and a 9,983.60 ETB wallet. The day book shows the same −16.40 commission and 9,983.60 balance.
+
+Found and fixed during the check: `format: date` fields came out as Dart `DateTime` and were sent as full timestamps, which the API rejects. `tools/generate-dart-client.sh` now maps them to `String`.
+
+Known limit: expiry alerts are an overview tile ("Documents expiring (30d)") plus `GET /admin/documents/expiring`. There is no dedicated list screen yet (CP8).
+
 
 ## CP6 — Flutter rider app (Android)
 

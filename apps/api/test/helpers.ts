@@ -49,3 +49,40 @@ export async function makeBackoffice(role: "admin" | "staff", phone = randomPhon
   });
   return { id, phone };
 }
+
+/** Credit a driver's prepaid deposit directly (default: the 10,000 ETB minimum). */
+export async function fundDriver(driverId: string, amount = 1_000_000) {
+  const { postLedger } = await import("../src/modules/wallet/ledger.js");
+  return withContext(SYSTEM, (db) => postLedger(db, { userId: driverId, amount, kind: "deposit", reference: "test" }));
+}
+
+/** A tiny valid PNG (1×1 pixel) to stand in for a document photo. */
+export const PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
+
+/**
+ * Upload a document the way the driver app does: ask for a signed URL, PUT the
+ * file there, submit. Uses the local storage driver (signed /api/v1/files URLs).
+ */
+export async function uploadDocument(
+  app: any, token: string, docType: string, opts: { vehicleId?: string; expiresOn?: string } = {},
+): Promise<string> {
+  const { default: request } = await import("supertest");
+  const start = await request(app).post("/api/v1/drivers/me/documents").set({ Authorization: `Bearer ${token}` })
+    .send({ docType, vehicleId: opts.vehicleId, contentType: "image/png", sizeBytes: PNG.length });
+  if (start.status !== 201) throw new Error(`start upload ${docType}: ${start.status} ${JSON.stringify(start.body)}`);
+  const url = new URL(start.body.upload.url);
+  await request(app).put(url.pathname + url.search).set("Content-Type", "image/png").send(PNG).expect(200);
+  const expiresOn = opts.expiresOn ?? (["license", "vehicle_insurance", "vehicle_bolo"].includes(docType) ? "2030-12-31" : undefined);
+  await request(app).post(`/api/v1/drivers/me/documents/${start.body.document.id}/submit`)
+    .set({ Authorization: `Bearer ${token}` }).send({ expiresOn }).expect(200);
+  return start.body.document.id;
+}
+
+/** All required documents for a driver and vehicle, uploaded and submitted. Returns their ids. */
+export async function uploadRequiredDocuments(app: any, token: string, vehicleId: string): Promise<string[]> {
+  const ids: string[] = [];
+  for (const t of ["license", "photo"]) ids.push(await uploadDocument(app, token, t));
+  for (const t of ["vehicle_libre", "vehicle_insurance", "vehicle_bolo"]) ids.push(await uploadDocument(app, token, t, { vehicleId }));
+  return ids;
+}

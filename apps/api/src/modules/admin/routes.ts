@@ -7,7 +7,13 @@ import { SYSTEM, withContext } from "../../db/context.js";
 import { AppError, notFound } from "../../lib/errors.js";
 import { normalizeEthiopianPhone } from "../../lib/phone.js";
 import { page, uuidParam } from "../../lib/schemas.js";
+import { storage } from "../../lib/storage.js";
+import { emitToUser } from "../../realtime/socket.js";
+import { DOC_COLUMNS, requirements, reviewDocument } from "../drivers/documents.js";
+import { balances, moneySettings, walletStatus } from "../drivers/money.js";
+import { setUnavailable } from "../drivers/presence.js";
 import { cancelTrip } from "../trips/service.js";
+import { postLedger } from "../wallet/ledger.js";
 
 /**
  * Back-office API for the Next.js dashboard, used by admins (everything) and
@@ -125,12 +131,21 @@ adminRouter.post("/drivers/:id/review", requirePermission("drivers.approve"), as
   const { id } = uuidParam.parse(req.params);
   const body = driverReviewBody.parse(req.body);
   const result = await withContext(req.ctx, async (db) => {
+    if (body.decision === "approved") {
+      // Personal documents, plus the vehicle's when approving a vehicle, must be approved and unexpired.
+      const missing = (await requirements(db, id, body.vehicleId ?? null)).filter((r) => r.status !== "approved");
+      if (missing.length > 0) {
+        throw new AppError(422, "DOCUMENTS_INCOMPLETE", "Required documents are missing or not approved", { missing });
+      }
+    }
     const { rows: [p] } = await db.query(
       `UPDATE driver_profiles SET approval_status = $2::approval_status,
-              approved_at = CASE WHEN $2::text = 'approved' THEN now() END,
-              approved_by = CASE WHEN $2::text = 'approved' THEN app.uid() END
+              approved_at = CASE WHEN $2::text = 'approved' THEN coalesce(approved_at, now()) END,
+              approved_by = CASE WHEN $2::text = 'approved' THEN app.uid() END,
+              suspended_reason = CASE WHEN $2::text = 'approved' THEN NULL ELSE $3 END,
+              availability = CASE WHEN $2::text = 'approved' THEN availability ELSE 'offline' END
         WHERE user_id = $1 RETURNING approval_status AS "approvalStatus"`,
-      [id, body.decision],
+      [id, body.decision, body.note ?? null],
     );
     if (!p) throw notFound("Driver");
     if (body.vehicleId) {
@@ -147,7 +162,215 @@ adminRouter.post("/drivers/:id/review", requirePermission("drivers.approve"), as
     await audit(db, "driver.review", "driver", id, body);
     return p;
   });
+  if (body.decision !== "approved") await setUnavailable(id);
+  emitToUser(id, "driver:approval", result);
   res.json(result);
+});
+
+// ───────────────────────── Drivers: list, detail, documents ─────────────────────────
+
+const DRIVER_STAFF = ["drivers.view", "drivers.approve", "drivers.commission",
+  "finance.deposits.record", "finance.refunds.manage"] as const;
+
+adminRouter.get("/drivers", requirePermission(...DRIVER_STAFF), async (req, res) => {
+  const q = adminDriversQuery.parse(req.query);
+  const rows = await withContext(req.ctx, async (db) =>
+    (await db.query(
+      `SELECT u.id, u.phone, u.full_name AS "fullName", u.status, dp.approval_status AS "approvalStatus",
+              dp.availability, dp.suspended_reason AS "suspendedReason", dp.commission_bps AS "customCommissionBps",
+              w.balance, dp.created_at AS "appliedAt",
+              (SELECT count(*)::int FROM driver_documents d WHERE d.driver_id = u.id AND d.status = 'pending') AS "documentsToReview"
+         FROM driver_profiles dp JOIN users u ON u.id = dp.user_id LEFT JOIN wallets w ON w.user_id = u.id
+        WHERE ($1::approval_status IS NULL OR dp.approval_status = $1)
+          AND ($2::text IS NULL OR u.phone LIKE '%' || $2 || '%' OR u.full_name ILIKE '%' || $2 || '%')
+        ORDER BY (SELECT count(*) FROM driver_documents d WHERE d.driver_id = u.id AND d.status = 'pending') DESC,
+                 dp.created_at DESC
+        LIMIT $3`,
+      [q.status ?? null, q.search ?? null, q.limit],
+    )).rows,
+  );
+  res.json({ data: rows });
+});
+
+adminRouter.get("/drivers/:id", requirePermission(...DRIVER_STAFF), async (req, res) => {
+  const { id } = uuidParam.parse(req.params);
+  const data = await withContext(req.ctx, async (db) => {
+    const { rows: [driver] } = await db.query(
+      `SELECT u.id, u.phone, u.full_name AS "fullName", u.status, u.created_at AS "createdAt",
+              dp.approval_status AS "approvalStatus", dp.availability, dp.suspended_reason AS "suspendedReason",
+              dp.license_number AS "licenseNumber", dp.license_expires_on AS "licenseExpiresOn",
+              dp.commission_bps AS "customCommissionBps", dp.approved_at AS "approvedAt",
+              dp.rating_avg AS "ratingAvg", dp.rating_count AS "ratingCount"
+         FROM driver_profiles dp JOIN users u ON u.id = dp.user_id WHERE u.id = $1`,
+      [id],
+    );
+    if (!driver) throw notFound("Driver");
+    const settings = await moneySettings(db);
+    const { rows: vehicles } = await db.query(
+      `SELECT id, category_code AS "categoryCode", plate_number AS "plateNumber", make, model, color, year,
+              status, is_current AS "isCurrent" FROM vehicles WHERE driver_id = $1 ORDER BY created_at`,
+      [id],
+    );
+    const { rows: documents } = await db.query(
+      `SELECT ${DOC_COLUMNS} FROM driver_documents d WHERE d.driver_id = $1 AND d.status NOT IN ('uploading', 'replaced')
+        ORDER BY d.uploaded_at DESC`,
+      [id],
+    );
+    const vehicle = vehicles.find((v) => v.isCurrent) ?? vehicles.at(-1);
+    const balance = (await balances(db, [id])).get(id);
+    const { rows: refunds } = await db.query(
+      `SELECT id, status, requested_at AS "requestedAt", note, amount, reference, reject_reason AS "rejectReason"
+         FROM deposit_refunds WHERE driver_id = $1 ORDER BY requested_at DESC LIMIT 10`,
+      [id],
+    );
+    return {
+      ...driver,
+      commissionBps: driver.customCommissionBps ?? settings.defaultCommissionBps,
+      // null when the viewer may not see wallets
+      wallet: balance === undefined ? null : walletStatus(balance, settings),
+      refundEligibleFrom: driver.approvedAt
+        ? new Date(new Date(driver.approvedAt).getTime() + settings.refundAfterDays * 86_400_000).toISOString() : null,
+      vehicles,
+      documents,
+      required: await requirements(db, id, vehicle?.id ?? null),
+      refunds,
+    };
+  });
+  res.json(data);
+});
+
+/** Short-lived link to view a document file. */
+adminRouter.get("/documents/:id/file", requirePermission("drivers.view", "drivers.approve"), async (req, res) => {
+  const { id } = uuidParam.parse(req.params);
+  const key = await withContext(req.ctx, async (db) =>
+    (await db.query("SELECT storage_key FROM driver_documents WHERE id = $1", [id])).rows[0]?.storage_key,
+  );
+  if (!key) throw notFound("Document");
+  res.json({ url: await storage.downloadUrl(key), expiresInSeconds: 300 });
+});
+
+adminRouter.post("/documents/:id/review", requirePermission("drivers.approve"), async (req, res) => {
+  const { id } = uuidParam.parse(req.params);
+  res.json(await reviewDocument(req.ctx, id, documentReviewBody.parse(req.body)));
+});
+
+/** Approved documents expiring within N days (default 30), soonest first. */
+adminRouter.get("/documents/expiring", requirePermission("drivers.view", "drivers.approve"), async (req, res) => {
+  const { days } = expiringQuery.parse(req.query);
+  const rows = await withContext(req.ctx, async (db) =>
+    (await db.query(
+      `SELECT ${DOC_COLUMNS}, u.phone, u.full_name AS "fullName"
+         FROM driver_documents d JOIN users u ON u.id = d.driver_id
+        WHERE d.status = 'approved'
+          AND d.expires_on < (now() AT TIME ZONE 'Africa/Addis_Ababa')::date + $1::int
+        ORDER BY d.expires_on`,
+      [days],
+    )).rows,
+  );
+  res.json({ data: rows });
+});
+
+/** Custom commission for one driver; null returns them to the default. */
+adminRouter.put("/drivers/:id/commission", requirePermission("drivers.commission"), async (req, res) => {
+  const { id } = uuidParam.parse(req.params);
+  const { commissionBps } = driverCommissionBody.parse(req.body);
+  const result = await withContext(req.ctx, async (db) => {
+    const { rows: [p] } = await db.query(
+      `UPDATE driver_profiles SET commission_bps = $2 WHERE user_id = $1
+       RETURNING commission_bps AS "customCommissionBps"`,
+      [id, commissionBps],
+    );
+    if (!p) throw notFound("Driver");
+    await audit(db, "driver.commission", "driver", id, { commissionBps });
+    return p;
+  });
+  res.json(result);
+});
+
+// ───────────────────────── Deposits and refunds ─────────────────────────
+
+/** Record a deposit the driver paid at the office (cash, bank slip…). At least the minimum deposit. */
+adminRouter.post("/drivers/:id/deposits", requirePermission("finance.deposits.record"), async (req, res) => {
+  const { id } = uuidParam.parse(req.params);
+  const body = depositBody.parse(req.body);
+  // Visibility check as the staff member (RLS), then the ledger write as server code.
+  const settings = await withContext(req.ctx, async (db) => {
+    const { rowCount } = await db.query("SELECT 1 FROM users WHERE id = $1 AND role = 'driver'", [id]);
+    if (!rowCount) throw notFound("Driver");
+    return moneySettings(db);
+  });
+  if (body.amount < settings.minDeposit) {
+    throw new AppError(422, "DEPOSIT_TOO_SMALL", "Deposit is below the minimum", { minDeposit: settings.minDeposit });
+  }
+  const balance = await withContext(SYSTEM, (db) =>
+    postLedger(db, { userId: id, amount: body.amount, kind: "deposit", reference: body.reference, createdBy: req.ctx.userId }),
+  );
+  await withContext(req.ctx, (db) => audit(db, "driver.deposit", "driver", id, body));
+  const wallet = walletStatus(balance, settings);
+  emitToUser(id, "driver:wallet", wallet);
+  res.status(201).json(wallet);
+});
+
+const REFUND_ADMIN_COLUMNS = `r.id, r.driver_id AS "driverId", r.status, r.requested_at AS "requestedAt", r.note,
+  r.amount, r.reference, r.reject_reason AS "rejectReason", r.decided_at AS "decidedAt"`;
+
+adminRouter.get("/refunds", requirePermission("finance.refunds.manage"), async (req, res) => {
+  const { status } = refundsQuery.parse(req.query);
+  const rows = await withContext(req.ctx, async (db) =>
+    (await db.query(
+      `SELECT ${REFUND_ADMIN_COLUMNS}, u.phone, u.full_name AS "fullName", w.balance
+         FROM deposit_refunds r JOIN users u ON u.id = r.driver_id LEFT JOIN wallets w ON w.user_id = r.driver_id
+        WHERE ($1::refund_status IS NULL OR r.status = $1) ORDER BY r.requested_at DESC LIMIT 200`,
+      [status ?? null],
+    )).rows,
+  );
+  res.json({ data: rows });
+});
+
+/**
+ * Pay out a refund: the driver's whole remaining balance leaves the wallet as
+ * a 'payout' (shown in the day book); the driver goes offline.
+ */
+adminRouter.post("/refunds/:id/pay", requirePermission("finance.refunds.manage"), async (req, res) => {
+  const { id } = uuidParam.parse(req.params);
+  const { reference } = refundPayBody.parse(req.body);
+  const driverId = await withContext(req.ctx, async (db) =>
+    (await db.query("SELECT driver_id FROM deposit_refunds WHERE id = $1 AND status = 'pending'", [id])).rows[0]?.driver_id,
+  );
+  if (!driverId) throw notFound("Pending refund request");
+  const refund = await withContext(SYSTEM, async (db) => {
+    const { rows: [w] } = await db.query("SELECT balance FROM wallets WHERE user_id = $1 FOR UPDATE", [driverId]);
+    if (!w || w.balance <= 0) throw new AppError(422, "NOTHING_TO_REFUND", "The driver's balance is zero", { balance: w?.balance ?? 0 });
+    await postLedger(db, { userId: driverId, amount: -w.balance, kind: "payout", reference, createdBy: req.ctx.userId });
+    await db.query("UPDATE driver_profiles SET availability = 'offline' WHERE user_id = $1", [driverId]);
+    const { rows: [r] } = await db.query(
+      `UPDATE deposit_refunds r SET status = 'paid', amount = $2, reference = $3, decided_at = now(), decided_by = $4
+        WHERE id = $1 RETURNING ${REFUND_ADMIN_COLUMNS}`,
+      [id, w.balance, reference, req.ctx.userId],
+    );
+    return r;
+  });
+  await setUnavailable(driverId);
+  await withContext(req.ctx, (db) => audit(db, "refund.pay", "refund", id, { amount: refund.amount, reference }));
+  emitToUser(driverId, "driver:refund", refund);
+  res.json(refund);
+});
+
+adminRouter.post("/refunds/:id/reject", requirePermission("finance.refunds.manage"), async (req, res) => {
+  const { id } = uuidParam.parse(req.params);
+  const { reason } = refundRejectBody.parse(req.body);
+  const refund = await withContext(req.ctx, async (db) => {
+    const { rows: [r] } = await db.query(
+      `UPDATE deposit_refunds r SET status = 'rejected', reject_reason = $2, decided_at = now(), decided_by = app.uid()
+        WHERE id = $1 AND status = 'pending' RETURNING ${REFUND_ADMIN_COLUMNS}`,
+      [id, reason],
+    );
+    if (!r) throw notFound("Pending refund request");
+    await audit(db, "refund.reject", "refund", id, { reason });
+    return r;
+  });
+  emitToUser(refund.driverId, "driver:refund", refund);
+  res.json(refund);
 });
 
 // ───────────────────────── Trips ─────────────────────────
@@ -230,10 +453,27 @@ adminRouter.post("/wallets/:id/adjust", requirePermission("finance.wallets.adjus
 // ───────────────────────── Business settings ─────────────────────────
 // Admin-adjustable rules. Each key is validated here; unknown keys are refused.
 const SETTINGS = z.object({
+  /** Commission for drivers without a custom rate (1000 = 10%). */
+  defaultCommissionBps: z.number().int().min(0).max(10_000),
+  /** Smallest deposit accepted, santim. */
+  minDeposit: z.number().int().min(0),
+  /** Below this balance (santim) a driver can't go online or get offers. */
+  lowBalanceThreshold: z.number().int().min(0),
+  /** Below this balance (santim) the driver is warned to top up. */
+  lowBalanceWarning: z.number().int().min(0),
+  /** Days after approval before a deposit can be refunded. */
+  refundAfterDays: z.number().int().min(0).max(3650),
   /** Max extra for longer-than-estimated trips, in basis points of the quote (2500 = 25%). */
   overtimeCapBps: z.number().int().min(0).max(10_000),
 }).partial();
-const SETTING_KEYS: Record<string, string> = { overtimeCapBps: "overtime_cap_bps" };
+const SETTING_KEYS: Record<string, string> = {
+  overtimeCapBps: "overtime_cap_bps",
+  defaultCommissionBps: "default_commission_bps",
+  minDeposit: "min_deposit",
+  lowBalanceThreshold: "low_balance_threshold",
+  lowBalanceWarning: "low_balance_warning",
+  refundAfterDays: "refund_after_days",
+};
 
 adminRouter.get("/settings", requirePermission("pricing.manage"), async (req, res) => {
   const rows = await withContext(req.ctx, async (db) => (await db.query("SELECT key, value FROM app_settings")).rows);
@@ -386,3 +626,26 @@ export const createStaffBody = z
     permissions: permissionList.default([]),
   });
 export const staffPermissionsBody = z.object({ permissions: permissionList });
+export const adminDriversQuery = z.object({
+  status: z.enum(["pending", "approved", "rejected", "suspended"]).optional(),
+  search: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(100),
+});
+export const documentReviewBody = z.object({
+  decision: z.enum(["approved", "rejected"]),
+  reason: z.string().trim().max(300).optional().describe("Required when rejecting; shown to the driver"),
+  expiresOn: z.iso.date().optional().describe("Set or correct the expiry printed on the document"),
+});
+export const expiringQuery = z.object({ days: z.coerce.number().int().min(1).max(365).default(30) });
+export const driverCommissionBody = z.object({
+  commissionBps: z.number().int().min(0).max(10_000).nullable().describe("e.g. 800 = 8%; null = use the default"),
+});
+export const depositBody = z.object({
+  amount: z.number().int().positive().describe("Santim"),
+  reference: z.string().trim().min(2).max(100).describe("Receipt or bank slip number"),
+});
+export const refundsQuery = z.object({ status: z.enum(["pending", "paid", "rejected", "cancelled"]).optional() });
+export const refundPayBody = z.object({
+  reference: z.string().trim().min(2).max(100).describe("How it was paid: receipt, bank or telebirr reference"),
+});
+export const refundRejectBody = z.object({ reason: z.string().trim().min(3).max(300) });
