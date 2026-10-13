@@ -1,7 +1,8 @@
 "use client";
 
 import {
-  Map as MlMap, Marker, NavigationControl, type GeoJSONSource, type MapMouseEvent, type StyleSpecification,
+  Map as MlMap, Marker, NavigationControl, setWorkerUrl,
+  type GeoJSONSource, type MapMouseEvent, type StyleSpecification,
 } from "maplibre-gl";
 import { useEffect, useRef } from "react";
 
@@ -10,11 +11,23 @@ export interface LatLng { lat: number; lng: number }
 const ADDIS: [number, number] = [38.7578, 9.0054];
 
 /**
- * Gebeta vector tiles when NEXT_PUBLIC_GEBETA_STYLE_URL is set; otherwise an
- * OpenStreetMap raster style so the app works before a key is configured.
- * (OSM's public tiles are for development only — not production traffic.)
+ * Gebeta vector tiles when NEXT_PUBLIC_GEBETA_TILES_KEY is set. Gebeta
+ * authenticates tile, sprite and font requests with a Bearer header, added
+ * here via transformRequest exactly as the official @gebeta/tiles package does.
+ * Without a key, an OpenStreetMap raster style keeps local dev working
+ * (OSM's public tiles are for development only — not production traffic).
+ *
+ * The key is visible to anyone using the site. Use a key restricted to your
+ * domain in the Gebeta dashboard; the stronger option is short-lived tokens
+ * minted by the API with @gebeta/node (see docs/ARCHITECTURE.md).
  */
-const style: string | StyleSpecification = process.env.NEXT_PUBLIC_GEBETA_STYLE_URL || {
+const GEBETA_KEY = process.env.NEXT_PUBLIC_GEBETA_TILES_KEY;
+
+// Copied into public/ by scripts/copy-maplibre-worker.mjs (pre-dev/pre-build).
+setWorkerUrl("/maplibre/maplibre-gl-worker.mjs");
+const GEBETA_STYLE = "https://tiles.gebeta.app/styles/standard/style.json";
+
+const OSM_STYLE: StyleSpecification = {
   version: 8,
   sources: {
     osm: {
@@ -26,6 +39,28 @@ const style: string | StyleSpecification = process.env.NEXT_PUBLIC_GEBETA_STYLE_
   },
   layers: [{ id: "osm", type: "raster", source: "osm" }],
 };
+
+/**
+ * Gebeta's style references "Open Sans" fonts its server doesn't host (404),
+ * which hides square and office labels — squares like Meskel Square are key
+ * landmarks for riders. Swap them for the font Gebeta does serve.
+ */
+const HOSTED_FONT = "JakartaSans";
+function fixGebetaFonts(_prev: StyleSpecification | undefined, next: StyleSpecification): StyleSpecification {
+  return {
+    ...next,
+    layers: next.layers.map((layer) => {
+      const font = layer.type === "symbol" ? layer.layout?.["text-font"] : undefined;
+      if (!Array.isArray(font) || !font.some((f) => typeof f === "string" && f.startsWith("Open Sans"))) return layer;
+      return { ...layer, layout: { ...layer.layout, "text-font": [HOSTED_FONT] } } as typeof layer;
+    }),
+  };
+}
+
+const transformRequest = (url: string) =>
+  GEBETA_KEY && new URL(url).hostname === "tiles.gebeta.app"
+    ? { url, headers: { Authorization: `Bearer ${GEBETA_KEY}` } }
+    : { url };
 
 export function RideMap(props: {
   pickup?: LatLng;
@@ -43,7 +78,9 @@ export function RideMap(props: {
 
   useEffect(() => {
     if (!el.current) return;
-    const m = new MlMap({ container: el.current, style, center: ADDIS, zoom: 12 });
+    const m = new MlMap({ container: el.current, center: ADDIS, zoom: 12, transformRequest });
+    if (GEBETA_KEY) m.setStyle(GEBETA_STYLE, { transformStyle: fixGebetaFonts });
+    else m.setStyle(OSM_STYLE);
     m.addControl(new NavigationControl(), "top-right");
     m.on("click", (e: MapMouseEvent) => onPick.current?.({ lat: e.lngLat.lat, lng: e.lngLat.lng }));
     map.current = m;

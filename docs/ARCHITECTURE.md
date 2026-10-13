@@ -147,8 +147,33 @@ v2 (see PLAN.md) ranks candidates by **road ETA** using Gebeta's one-to-many end
 | server → rider | `driver:location` | `{ tripId, lat, lng, heading }` |
 | driver → server | `driver:location` | `{ lat, lng, heading? }` |
 
-## Gebeta Maps integration status
-The endpoint paths in `gebeta.ts` follow Gebeta's public docs (`/api/route/direction/`, `/api/v1/route/geocoding`,
-`/api/v1/route/revgeocoding`). The **response field names are parsed defensively but were not verified against a live
-call**, because the build environment could not reach Gebeta. Before launch, make one real call with your key and adjust
-`getRoute` / `toPlaces` if needed. If routing fails, it falls back to a straight-line estimate and logs a warning.
+## Gebeta Maps integration (verified live, Oct 2026)
+
+All map services go through `apps/api/src/modules/geo/gebeta.ts` (routing, geocoding) and
+`apps/web/src/components/Map.tsx` (tiles). The live API differs from docs.gebeta.app in several places;
+the code follows the live behaviour:
+
+| Service | Live behaviour | Docs say |
+|---|---|---|
+| Directions | `GET /api/route/direction/?origin=lat,lng&destination=lat,lng&apiKey=` → `totalDistance` **metres**, `timetaken` **seconds**, `direction` = `[[lat,lng],…]` | braces around coordinates (both forms work) |
+| One-to-many (ONM) | `GET /api/route/onm?origin=lat,lng&json=[{lat,lng},{lat,lng}]&apiKey=` (**no trailing slash**; max 5 targets) → `origin_to_destination[{to, distance (**km**), time (s)}]` | `/onm/` (returns 502) and a `directions[]` response |
+| Matrix | `GET /api/route/matrix?json=[{lat,lng},…]&apiKey=` (no trailing slash) | — |
+| Geocode | `GET /v2/search/geocode?query=&country=et&proximity=lng,lat&limit=&apiKey=` | key may be a Bearer header (it's rejected: "missing api key") |
+| Reverse | `GET /v2/search/reverse-geocoding?lat=&lon=&size=&apiKey=`; results include `neighborhood` | — |
+| Tiles | `https://tiles.gebeta.app/styles/standard/style.json`; tiles, sprites and fonts need `Authorization: Bearer <key>` | — |
+
+Quirks handled in code:
+- Place names sometimes contain a tab separator ("Branch\tCommercial Bank Of Ethiopia - …"); the descriptive
+  part is kept.
+- The proximity bias is weak ("Piassa" from Bole ranked Mekelle and Hawassa first), so results within 60 km
+  of the rider are re-ranked to the top.
+- Gebeta's style references "Open Sans" fonts the tile server doesn't host (404), hiding square and office
+  labels; `Map.tsx` swaps them for the hosted `JakartaSans`.
+- MapLibre v6 loads its worker from a separate module that bundlers rename; `scripts/copy-maplibre-worker.mjs`
+  copies it to `public/maplibre/` before dev/build and `Map.tsx` calls `setWorkerUrl`.
+- `legsFrom()` (ONM) is implemented and tested for dispatch v2: rank the 5 nearest drivers by real driving
+  time to the pickup. Dispatch still uses straight-line distance until that is switched on.
+
+Keys: `GEBETA_API_KEY` (API, server-side only) and `NEXT_PUBLIC_GEBETA_TILES_KEY` (web, visible to visitors —
+restrict it to your domain in the Gebeta dashboard). Gebeta's `@gebeta/node` SDK can mint short-lived client
+tokens so the browser never holds a long-lived key; worth adopting before launch.

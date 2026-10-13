@@ -23,7 +23,8 @@ corepack enable && pnpm install
 # 3. Configure
 cp apps/api/.env.example apps/api/.env
 cp apps/web/.env.example apps/web/.env.local
-#    set GEBETA_API_KEY in apps/api/.env (optional: without it routes use a straight-line estimate)
+#    set GEBETA_API_KEY in apps/api/.env and NEXT_PUBLIC_GEBETA_TILES_KEY in apps/web/.env.local
+#    (optional: without them routes use a straight-line estimate and the map uses OpenStreetMap)
 
 # 4. Database
 pnpm db:migrate

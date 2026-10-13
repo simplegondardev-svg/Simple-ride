@@ -21,6 +21,9 @@ pnpm -r typecheck
 pnpm --filter @simple-ride/api reset-password <phone> [role]   # break-glass temporary password
 ```
 
+In Claude's cloud container, Node's `fetch` ignores the outbound proxy: run the API with
+`NODE_USE_ENV_PROXY=1` to reach Gebeta (not needed on normal servers).
+
 Without Docker: the DB needs two roles, `simpleride_owner` (owns schema, runs migrations) and
 `simpleride_app` (LOGIN, NOBYPASSRLS) — see `infra/postgres/init.sh` and `.github/workflows/ci.yml`.
 Tests use the dev database and Redis DB 15.
@@ -45,6 +48,10 @@ Tests use the dev database and Redis DB 15.
   `{ error: { code, message, details } }` with stable codes, money as integer **santim** (1 ETB = 100),
   coordinates as `{ lat, lng }`, ISO-8601 UTC timestamps, `clientRequestId` idempotency on trip creation.
 - **Gebeta Maps** routing/geocoding only through `src/modules/geo/gebeta.ts` (server-side key, Redis cache, fallback).
+  The live API differs from docs.gebeta.app (no trailing slash on `/onm` and `/matrix`, ONM distance in km,
+  search needs `?apiKey` not a header) — see the table in `docs/ARCHITECTURE.md` before changing it.
+  Gebeta docs as one file: https://docs.gebeta.app/llms-full.txt
+- **Never commit keys.** Gebeta keys live only in `apps/api/.env` and `apps/web/.env.local` (git-ignored).
 - Postgres parameters used both as enum/text or in comparisons need explicit casts (`$2::approval_status`,
   `$2::int`) — inference has caused 500s here twice.
 
@@ -82,7 +89,6 @@ The building blocks already exist: `src/auth/otp.ts` (6-digit codes in Redis, 5-
 
 ## Other known gaps
 
-- Gebeta response field names are parsed defensively but were never checked against a live call.
 - Seeded fares and the 10–12% commission are placeholders pending a business decision.
 - `pricing.manage`, `zones.manage`, `sos.*` permissions have RLS rules but no endpoints/screens yet.
 - telebirr payments, push notifications (FCM), driver document uploads, dispatch v2 (ETA ranking) — see `docs/PLAN.md`.

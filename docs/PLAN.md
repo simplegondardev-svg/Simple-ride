@@ -141,11 +141,12 @@ but not independently confirmed, **[Guessing]** assumption that needs validation
 |---|---|
 | Push notifications (FCM) for offers, status changes and promos | P1 |
 | SMS provider behind the `SmsSender` interface (AfroMessage or Ethio Telecom gateway) [Guessing on provider] | P1 |
-| **Dispatch v2**: rank candidates by road ETA via the Gebeta one-to-many API, sequential offers with a short window, acceptance-rate weighting, matching drivers about to finish a trip | P1 |
+| **Dispatch v2**: rank candidates by road ETA via the Gebeta one-to-many API (client `legsFrom()` built and verified live), sequential offers with a short window, acceptance-rate weighting, matching drivers about to finish a trip | P1 |
 | Fraud: GPS-spoofing detection, collusion (same device for rider and driver), cancellation abuse | P2 |
 | Dynamic pricing on an **H3 grid** (supply/demand per cell), capped and transparent. RIDE markets itself as having no surge pricing, so treat this as a product decision | P2 |
 | Observability: structured logs (done), metrics, tracing, uptime and SLO alerts | P1 |
 | Background workers (dispatch, sweeps, notifications) split out of the API process | P2 |
+| Charge by distance actually driven: Gebeta **Map Matching** API snaps the trip's GPS trail to roads | P2 |
 | Analytics warehouse; demand forecasting | P3 |
 | New verticals: bajaj and motorbike, parcel delivery | P3 |
 
