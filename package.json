@@ -1,0 +1,15 @@
+{
+  "name": "simple-ride",
+  "private": true,
+  "packageManager": "pnpm@10.28.0",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "dev:api": "pnpm --filter @simple-ride/api dev",
+    "dev:web": "pnpm --filter @simple-ride/web dev",
+    "db:migrate": "pnpm --filter @simple-ride/api db:migrate",
+    "db:seed": "pnpm --filter @simple-ride/api db:seed",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test"
+  }
+}

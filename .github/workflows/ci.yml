@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  api:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_DB: simpleride
+          POSTGRES_USER: simpleride_owner
+          POSTGRES_PASSWORD: owner_dev_password
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U simpleride_owner -d simpleride"
+          --health-interval 5s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+    env:
+      DATABASE_URL: postgres://simpleride_app:app_dev_password@localhost:5432/simpleride
+      DATABASE_OWNER_URL: postgres://simpleride_owner:owner_dev_password@localhost:5432/simpleride
+      JWT_ACCESS_SECRET: ci-secret-ci-secret-ci-secret-ci-secret
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - name: Create runtime DB role (mirrors infra/postgres/init.sh)
+        run: |
+          PGPASSWORD=owner_dev_password psql -h localhost -U simpleride_owner -d simpleride -c \
+            "CREATE ROLE simpleride_app LOGIN PASSWORD 'app_dev_password' NOBYPASSRLS; GRANT CONNECT ON DATABASE simpleride TO simpleride_app;"
+      - run: pnpm --filter @simple-ride/api typecheck
+      - run: pnpm --filter @simple-ride/api db:migrate
+      - run: pnpm --filter @simple-ride/api db:seed
+      - run: pnpm --filter @simple-ride/api test
+      - run: pnpm --filter @simple-ride/api build
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @simple-ride/web typecheck
+      - run: pnpm --filter @simple-ride/web build
