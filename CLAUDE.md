@@ -90,7 +90,9 @@ The building blocks already exist: `src/auth/otp.ts` (6-digit codes in Redis, 5-
 
 ## Other known gaps
 
-- Seeded fares and the 10–12% commission are placeholders pending a business decision.
+- Seeded fares are placeholders until benchmarked. Business rules (10% default commission, prepaid driver
+  deposit, low-balance block, refunds after 3 months, +25% overtime cap, no cancellation fees) are decided —
+  see the table in `docs/MVP_CHECKPOINTS.md` — but not implemented yet (CP2 overtime, CP5 deposit).
 - `pricing.manage`, `zones.manage`, `sos.*` permissions have RLS rules but no endpoints/screens yet.
 - telebirr payments, push notifications (FCM), driver document uploads, dispatch v2 (ETA ranking) — see `docs/PLAN.md`.
 - The trip sweeper runs in-process; with more than one API instance it needs a Redis lock or a worker.

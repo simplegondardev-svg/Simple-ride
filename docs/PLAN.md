@@ -196,6 +196,10 @@ new cities and verticals, data warehouse.
 
 ## 6. Open questions (decisions the business must make)
 
+> **Decided (Oct 2026):** questions 1–3 below are answered in the "Business decisions" table in
+> [`MVP_CHECKPOINTS.md`](MVP_CHECKPOINTS.md): 10% commission collected from a prepaid driver deposit,
+> placeholder fares until benchmarked, no surge pricing in the MVP, no cancellation fees for now.
+
 1. **Commission vs subscription**: percentage (seeded at 10–12%) or a flat driver subscription (Lift model),
    or a hybrid? This changes the wallet and ledger flows.
 2. **Real fares**: the seeded fares (e.g. Economy 60 ETB base, 22 ETB/km, 2 ETB/min, 150 ETB minimum) are

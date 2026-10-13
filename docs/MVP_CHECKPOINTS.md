@@ -23,13 +23,26 @@ trip lifecycle with dispatch, cash commission and wallet settlement, Gebeta rout
 verified live, web rider booking and back office (staff, day book), 108 tests, CI workflow.
 See `docs/ARCHITECTURE.md`.
 
+## Business decisions (agreed Oct 2026)
+
+| Topic | Decision |
+|---|---|
+| Revenue | Percentage commission, **10% default for every driver**, adjustable per driver by admin. |
+| How commission is collected | **Prepaid deposit**: drivers deposit (default minimum 10,000 ETB, admin-set) and commission is deducted per trip. They re-deposit when it runs low. |
+| Low balance | Below an admin-set threshold: can finish the current trip, can't go online or get offers until they deposit. |
+| Deposit refunds | Refundable on request after **3 months** with us (admin-adjustable). |
+| Fares | Placeholder rates for now; benchmark against RIDE, Feres and Yango on 5–10 common routes before the pilot. |
+| Cancellation fees | **None for now**: most riders pay cash at the destination, so a fee can't be enforced. Revisit when riders prepay. |
+| Longer trips | Quote + extra minutes at the per-minute rate, capped at **+25%** of the quote (admin-adjustable). |
+| Gebeta key | Keep the current key for testing; rotate and split server and tiles keys before the pilot (CP9). |
+
 ## Start now: business and legal track (runs alongside all checkpoints)
 
 These have lead times that development can't shorten. Each one blocks a specific checkpoint.
 
 | Item | Owner | Blocks |
 |---|---|---|
-| Fares, commission (or subscription), cancellation fee policy | Business | CP1 |
+| Fare benchmark: real RIDE, Feres and Yango quotes on 5–10 common routes | Business | CP10 |
 | SMS provider contract (e.g. AfroMessage, Ethio Telecom bulk SMS), sender ID approval | Business | CP3 |
 | Gebeta plan and quota for the expected trip volume; rotate the key shared during testing | Business | CP2, CP9 |
 | Transport Bureau recognition, trade licence, tax and VAT and receipt (e-invoicing) rules | Legal | CP10 |
@@ -45,10 +58,10 @@ These have lead times that development can't shorten. Each one blocks a specific
 
 **Goal:** lock decisions and publish an API contract, so the Flutter apps can start while the backend continues.
 
-- [ ] Record the business decisions (fares per category, commission, cancellation rules) in the seed and in `docs/PLAN.md`.
+- [x] Record the business decisions — see "Business decisions" below and `docs/PLAN.md` §6 (Oct 2026).
 - [ ] Generate an **OpenAPI spec** from the existing Zod schemas, served at `/api/v1/openapi.json`. Generate a Dart client from it.
 - [x] Confirm CI passes on GitHub — green on `main` since run #2 (Oct 2026).
-- [ ] Rotate the Gebeta key; separate keys for the API (server) and tiles (domain-restricted).
+- [x] Gebeta key: decided to keep the current key for testing; rotation moved to CP9.
 - [ ] Error codes catalogue in the docs (every `error.code` the apps must handle).
 
 **Exit:** CI is green on `main`. The OpenAPI spec covers every `/api/v1` route, and a generated Dart client compiles.
@@ -60,9 +73,9 @@ These have lead times that development can't shorten. Each one blocks a specific
 - [ ] Rank candidate drivers by **real driving time to the pickup**, using Gebeta's matrix (driver → pickup), not straight-line distance. Fall back to straight-line distance when Gebeta is down.
 - [ ] Offer to one or two drivers at a time with a short window, then the next ones. Track acceptance rate per driver.
 - [ ] Driver cancels after accepting → the trip goes back to searching instead of ending.
-- [ ] Cancellation fee after N minutes (per the CP1 policy), charged to the wallet or added to the next trip.
 - [ ] Drivers whose app stops pinging go offline automatically; stale "on trip" states are recovered.
-- [ ] Fare re-check at completion if the route was far longer than quoted (policy from CP1).
+- [ ] Overtime at completion: quote + (actual minutes − estimated minutes) × the category's per-minute rate,
+      capped at **+25%** of the quote (admin-adjustable). Never below the quote. Shown to rider and driver.
 - [ ] The trip sweeper takes a Redis lock, so several API instances don't double-dispatch.
 - [ ] Simulation script: 50 fake drivers moving around Addis and 200 trip requests, reporting acceptance rate and pickup times.
 
@@ -98,8 +111,16 @@ These have lead times that development can't shorten. Each one blocks a specific
 - [ ] Document uploads (licence, vehicle ownership booklet "libre", insurance, annual inspection "bolo", photo) to S3-compatible storage with signed URLs. Expiry dates stored.
 - [ ] Back office: document review screen, approve or reject with a reason, expiry alerts, auto-suspend on expiry.
 - [ ] Driver earnings API: today, this week, per trip, commission, wallet balance.
-- [ ] Low wallet balance: warn below a threshold; block going online below the floor (policy from CP1).
-- [ ] Wallet top-up at the office: staff record cash received using the existing adjustment flow, and it appears in the day book.
+- [ ] **Prepaid commission deposit:** a new driver can't go online until they deposit at least the admin-set
+      minimum (default 10,000 ETB). Commission is deducted from it trip by trip.
+- [ ] **Low balance:** warn early; below the admin-set threshold the driver can finish the current trip but
+      can't go online or receive offers until they deposit again (at least the minimum deposit).
+- [ ] **Custom commission per driver** set by admin (overrides the 10% default), recorded in the audit log.
+- [ ] **Deposit refund:** remaining balance refundable on request once the driver has been with us for the
+      admin-set period (default 3 months from approval); recorded as a `payout` in the ledger and day book.
+- [ ] Deposits and top-ups at the office: staff record cash received with a dedicated "deposit" entry
+      (not a manual adjustment), and it appears in the day book.
+- [ ] Admin settings screen for: minimum deposit, low-balance threshold, refund period, overtime cap, default commission.
 
 **Exit:** a new driver goes from sign-up to approved and online using only the app and back office, and their earnings match the day book.
 
@@ -150,7 +171,9 @@ These have lead times that development can't shorten. Each one blocks a specific
 - [ ] TLS, secrets in a secrets manager, no keys in images or logs. The seed admin password is not printed into deploy logs.
 - [ ] Monitoring: error tracking, uptime checks, alerts (API down, error spike, sweeper stalled, Gebeta failing, SMS failing).
 - [ ] Load test: 200 concurrent drivers pinging location, 50 trip requests per minute.
-- [ ] Security review: run `/security-review`, and an external pen test if the budget allows. Short-lived Gebeta tile tokens via `@gebeta/node`.
+- [ ] Security review: run `/security-review`, and an external pen test if the budget allows.
+- [ ] **Rotate the Gebeta key** shared during testing. Separate keys: server key for the API, and a domain-restricted
+      key or short-lived tokens via `@gebeta/node` for map tiles.
 
 **Exit:** a restore drill brings the database back from a backup in staging. Alerts fire in a simulated outage. The load test passes with p95 API latency under 500 ms.
 

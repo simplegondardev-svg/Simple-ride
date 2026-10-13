@@ -5,12 +5,13 @@ import { hashPassword, temporaryPassword } from "../auth/password.js";
  * Development seed (idempotent): vehicle categories with illustrative Addis
  * Ababa fares, an Addis operating zone, and an admin account.
  * Fares are placeholders — set real ones from market research before launch.
+ * Commission is 10% for every category (business decision, Oct 2026).
  */
 const categories = [
   // code, name, seats, base, per_km, per_min, minimum, booking_fee, commission_bps, sort
   ["economy", "Economy", 4, 6000, 2200, 200, 15000, 0, 1000, 1],
-  ["comfort", "Comfort", 4, 9000, 3000, 300, 22000, 0, 1200, 2],
-  ["minivan", "Minivan", 7, 12000, 3800, 350, 30000, 0, 1200, 3],
+  ["comfort", "Comfort", 4, 9000, 3000, 300, 22000, 0, 1000, 2],
+  ["minivan", "Minivan", 7, 12000, 3800, 350, 30000, 0, 1000, 3],
 ] as const;
 
 // Rough bounding polygon around Addis Ababa (replace with ops-drawn zones).
