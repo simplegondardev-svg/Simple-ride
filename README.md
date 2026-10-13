@@ -10,6 +10,9 @@ Ride hailing for Ethiopia: riders, drivers and an operations dashboard. Gebeta M
 
 - **[docs/PLAN.md](docs/PLAN.md)**: market research (Uber, RIDE, Feres, Yango), the full feature set by role, and the roadmap.
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**: how the system fits together, the security model, and API conventions.
+- **[docs/MVP_CHECKPOINTS.md](docs/MVP_CHECKPOINTS.md)**: the path to the pilot, with exit criteria.
+- **API contract for the apps:** [`docs/openapi.json`](docs/openapi.json) (also served at `/api/v1/openapi.json`),
+  error codes in [docs/ERRORS.md](docs/ERRORS.md). Generate the Dart client with `tools/generate-dart-client.sh`.
 
 ## Quick start
 
@@ -62,6 +65,10 @@ You need Postgres and Redis running and migrations applied. The suite covers:
   change and support resets, hashes unreadable even by admins, session lengths.
 - **`staff.test.ts`**: staff see and change only what they were granted, can't grant themselves anything, and are
   locked out the moment they're suspended; plus the admin → staff flow over HTTP.
+- **`dispatch.test.ts`**: offer rounds, decline → next driver, driver backing out, overtime fares, sweeper, trip guard.
+- **`openapi.test.ts`, `contract.test.ts`, `errors.test.ts`**: the spec covers every route and is valid; real
+  responses match the documented models; every error code is in the catalogue.
+- **`gebeta.test.ts`**: Gebeta request formats and response parsing (from live responses).
 - **`unit.test.ts`**: fare maths, Ethiopian phone normalisation, the trip state machine, Gebeta parsing.
 
 ## Roles and security in one paragraph

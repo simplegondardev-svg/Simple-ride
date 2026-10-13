@@ -48,6 +48,10 @@ Tests use the dev database and Redis DB 15.
 - **API contract (Flutter depends on it):** `/api/v1` (breaking changes → `/api/v2`), camelCase JSON,
   `{ error: { code, message, details } }` with stable codes, money as integer **santim** (1 ETB = 100),
   coordinates as `{ lat, lng }`, ISO-8601 UTC timestamps, `clientRequestId` idempotency on trip creation.
+- **Changing the API** = keep request schemas exported from the route file, add/adjust the entry in
+  `src/contract/openapi.ts` and the response model in `src/contract/responses.ts`, add new error codes to
+  `docs/ERRORS.md`, then run `pnpm --filter @simple-ride/api openapi` to refresh `docs/openapi.json`.
+  Tests fail if any of these is missed.
 - **Gebeta Maps** routing/geocoding only through `src/modules/geo/gebeta.ts` (server-side key, Redis cache, fallback).
   The live API differs from docs.gebeta.app (no trailing slash on `/onm` and `/matrix`, ONM distance in km,
   search needs `?apiKey` not a header) — see the table in `docs/ARCHITECTURE.md` before changing it.

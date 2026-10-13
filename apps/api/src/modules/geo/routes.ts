@@ -18,25 +18,29 @@ const upstream = (err: unknown): never => {
   throw new AppError(502, "MAPS_UNAVAILABLE", "Map service unavailable");
 };
 
+
+// Request schemas (exported: the OpenAPI spec is built from them).
+export const placeSearchQuery = z
+  .object({
+    q: z.string().trim().min(2).max(100),
+    lat: z.coerce.number().min(-90).max(90).optional(),
+    lng: z.coerce.number().min(-180).max(180).optional(),
+  });
+export const reverseGeocodeQuery = z.object({
+  lat: z.coerce.number().min(-90).max(90),
+  lng: z.coerce.number().min(-180).max(180),
+});
+
 geoRouter.get("/search", async (req, res) => {
   // lat/lng (optional): the rider's position, so nearby matches rank first.
-  const { q, lat, lng } = z
-    .object({
-      q: z.string().trim().min(2).max(100),
-      lat: z.coerce.number().min(-90).max(90).optional(),
-      lng: z.coerce.number().min(-180).max(180).optional(),
-    })
-    .parse(req.query);
+  const { q, lat, lng } = placeSearchQuery.parse(req.query);
   await rateLimit(`geo:${req.ctx.userId}`, 60, 60);
   const near = lat !== undefined && lng !== undefined ? { lat, lng } : undefined;
   res.json({ data: await geocode(q, near).catch(upstream) });
 });
 
 geoRouter.get("/reverse", async (req, res) => {
-  const p = z.object({
-    lat: z.coerce.number().min(-90).max(90),
-    lng: z.coerce.number().min(-180).max(180),
-  }).parse(req.query);
+  const p = reverseGeocodeQuery.parse(req.query);
   await rateLimit(`geo:${req.ctx.userId}`, 60, 60);
   res.json({ data: await reverseGeocode(p).catch(upstream) });
 });

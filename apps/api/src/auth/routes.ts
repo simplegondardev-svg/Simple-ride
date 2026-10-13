@@ -60,16 +60,32 @@ async function issueTokens(
 
 // ───────────────────────── Register ─────────────────────────
 
+
+// Request schemas (exported: the OpenAPI spec is built from them).
+export const registerBody = z
+  .object({
+    phone: phoneSchema,
+    password: z.string(),
+    fullName: z.string().trim().min(2).max(100).optional(),
+    role: z.enum(["customer", "driver"]).default("customer"),
+    ...device,
+  });
+export const loginBody = z
+  .object({
+    phone: phoneSchema,
+    password: z.string().min(1).max(128),
+    role: z.enum(["customer", "driver", "admin", "staff"]).default("customer"),
+    // Required when the account holds a temporary password.
+    newPassword: z.string().optional(),
+    ...device,
+  });
+export const changePasswordBody = z
+  .object({ currentPassword: z.string().min(1), newPassword: z.string(), ...device });
+export const refreshBody = z.object({ refreshToken: z.string().min(10) });
+export const logoutBody = z.object({ refreshToken: z.string() });
+
 authRouter.post("/register", async (req, res) => {
-  const body = z
-    .object({
-      phone: phoneSchema,
-      password: z.string(),
-      fullName: z.string().trim().min(2).max(100).optional(),
-      role: z.enum(["customer", "driver"]).default("customer"),
-      ...device,
-    })
-    .parse(req.body);
+  const body = registerBody.parse(req.body);
   // Per-IP limits are loose on purpose: mobile carriers put many subscribers
   // behind one IP. Per-account lockout is the real defence for login.
   await rateLimit(`register:ip:${req.ip}`, 60, 600);
@@ -110,16 +126,7 @@ type LoginOutcome =
   | { kind: "change_required" };
 
 authRouter.post("/login", async (req, res) => {
-  const body = z
-    .object({
-      phone: phoneSchema,
-      password: z.string().min(1).max(128),
-      role: z.enum(["customer", "driver", "admin", "staff"]).default("customer"),
-      // Required when the account holds a temporary password.
-      newPassword: z.string().optional(),
-      ...device,
-    })
-    .parse(req.body);
+  const body = loginBody.parse(req.body);
   await rateLimit(`login:ip:${req.ip}`, 120, 600);
   if (body.newPassword !== undefined) checkNewPassword(body.newPassword, body.phone);
 
@@ -194,9 +201,7 @@ authRouter.post("/login", async (req, res) => {
 
 /** Changes the password and signs out every other device. Returns a fresh session. */
 authRouter.post("/password/change", requireAuth, async (req, res) => {
-  const body = z
-    .object({ currentPassword: z.string().min(1), newPassword: z.string(), ...device })
-    .parse(req.body);
+  const body = changePasswordBody.parse(req.body);
   const result = await withContext(SYSTEM, async (db) => {
     const { rows: [user] } = await db.query(`SELECT ${USER_COLS} FROM users WHERE id = $1`, [req.ctx.userId]);
     const { rows: [cred] } = await db.query(
@@ -220,7 +225,7 @@ authRouter.post("/password/change", requireAuth, async (req, res) => {
 // ───────────────────────── Sessions ─────────────────────────
 
 authRouter.post("/refresh", async (req, res) => {
-  const { refreshToken } = z.object({ refreshToken: z.string().min(10) }).parse(req.body);
+  const { refreshToken } = refreshBody.parse(req.body);
   const result = await withContext(SYSTEM, (db) => rotateSession(db, refreshToken));
   if (!result.ok) throw new AppError(401, "INVALID_REFRESH_TOKEN", "Session expired, log in again");
   res.json({
@@ -230,7 +235,7 @@ authRouter.post("/refresh", async (req, res) => {
 });
 
 authRouter.post("/logout", async (req, res) => {
-  const { refreshToken } = z.object({ refreshToken: z.string() }).parse(req.body);
+  const { refreshToken } = logoutBody.parse(req.body);
   await withContext(SYSTEM, (db) => revokeSession(db, refreshToken));
   res.status(204).end();
 });

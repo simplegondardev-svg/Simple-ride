@@ -59,12 +59,17 @@ These have lead times that development can't shorten. Each one blocks a specific
 **Goal:** lock decisions and publish an API contract, so the Flutter apps can start while the backend continues.
 
 - [x] Record the business decisions — see "Business decisions" below and `docs/PLAN.md` §6 (Oct 2026).
-- [ ] Generate an **OpenAPI spec** from the existing Zod schemas, served at `/api/v1/openapi.json`. Generate a Dart client from it.
+- [x] Generate an **OpenAPI spec** from the existing Zod schemas, served at `/api/v1/openapi.json` and committed as `docs/openapi.json`. Generate a Dart client from it (`tools/generate-dart-client.sh`).
 - [x] Confirm CI passes on GitHub — green on `main` since run #2 (Oct 2026).
 - [x] Gebeta key: decided to keep the current key for testing; rotation moved to CP9.
-- [ ] Error codes catalogue in the docs (every `error.code` the apps must handle).
+- [x] Error codes catalogue in the docs (every `error.code` the apps must handle): `docs/ERRORS.md`.
 
 **Exit:** CI is green on `main`. The OpenAPI spec covers every `/api/v1` route, and a generated Dart client compiles.
+
+✅ **CP1 done (Oct 2026).** All 50 routes are in the spec (enforced by a test that compares it with the router).
+Real responses are checked against the response models by contract tests. The generated Dart client (dart-dio)
+compiles with no errors, and a test program using it registered a rider, got a live Gebeta estimate and decoded an
+error code. CI regenerates and analyzes the Dart client on every push.
 
 ## CP2 — Dispatch and trips that hold up in real streets
 

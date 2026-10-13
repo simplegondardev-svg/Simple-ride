@@ -12,21 +12,29 @@ import {
 export const tripsRouter = Router();
 tripsRouter.use(requireAuth);
 
+
+// Request schemas (exported: the OpenAPI spec is built from them).
+export const estimateBody = z.object({ pickup: latLng, dropoff: latLng });
+export const createTripBody = z
+  .object({
+    clientRequestId: z.uuid(),
+    categoryCode: z.string(),
+    pickup: place,
+    dropoff: place,
+    paymentMethod: z.enum(["cash", "telebirr", "wallet"]).default("cash"),
+  });
+export const cancelTripBody = z.object({ reason: z.string().max(300).optional() });
+export const startTripBody = z.object({ ridePin: z.string().regex(/^\d{4}$/) });
+export const rateTripBody = z
+  .object({ score: z.number().int().min(1).max(5), comment: z.string().max(500).optional() });
+
 tripsRouter.post("/estimate", async (req, res) => {
-  const body = z.object({ pickup: latLng, dropoff: latLng }).parse(req.body);
+  const body = estimateBody.parse(req.body);
   res.json(await estimate(req.ctx, body.pickup, body.dropoff));
 });
 
 tripsRouter.post("/", requireRole("customer"), async (req, res) => {
-  const body = z
-    .object({
-      clientRequestId: z.uuid(),
-      categoryCode: z.string(),
-      pickup: place,
-      dropoff: place,
-      paymentMethod: z.enum(["cash", "telebirr", "wallet"]).default("cash"),
-    })
-    .parse(req.body);
+  const body = createTripBody.parse(req.body);
   const { trip, created } = await createTrip(req.ctx, body);
   res.status(created ? 201 : 200).json(trip);
 });
@@ -73,7 +81,7 @@ tripsRouter.get("/:id", async (req, res) => {
 
 tripsRouter.post("/:id/cancel", async (req, res) => {
   const { id } = uuidParam.parse(req.params);
-  const { reason } = z.object({ reason: z.string().max(300).optional() }).parse(req.body ?? {});
+  const { reason } = cancelTripBody.parse(req.body ?? {});
   res.json(await cancelTrip(req.ctx, id, reason));
 });
 
@@ -96,7 +104,7 @@ tripsRouter.post("/:id/arrive", requireRole("driver"), async (req, res) => {
 
 tripsRouter.post("/:id/start", requireRole("driver"), async (req, res) => {
   const { id } = uuidParam.parse(req.params);
-  const { ridePin } = z.object({ ridePin: z.string().regex(/^\d{4}$/) }).parse(req.body);
+  const { ridePin } = startTripBody.parse(req.body);
   res.json(await driverTransition(req.ctx, id, "start", ridePin));
 });
 
@@ -107,9 +115,7 @@ tripsRouter.post("/:id/complete", requireRole("driver"), async (req, res) => {
 
 tripsRouter.post("/:id/rate", async (req, res) => {
   const { id } = uuidParam.parse(req.params);
-  const body = z
-    .object({ score: z.number().int().min(1).max(5), comment: z.string().max(500).optional() })
-    .parse(req.body);
+  const body = rateTripBody.parse(req.body);
   await withContext(req.ctx, async (db) => {
     const { rows: [t] } = await db.query("SELECT customer_id, driver_id FROM trips WHERE id = $1", [id]);
     if (!t) throw notFound("Trip");

@@ -10,6 +10,26 @@ import { recordPing, setAvailable, setUnavailable } from "./presence.js";
 export const driversRouter = Router();
 driversRouter.use(requireRole("driver"));
 
+
+// Request schemas (exported: the OpenAPI spec is built from them).
+export const driverProfileBody = z
+  .object({
+    licenseNumber: z.string().trim().min(3).max(50),
+    licenseExpiresOn: z.iso.date(),
+    nationalId: z.string().trim().max(50).optional(),
+  });
+export const addVehicleBody = z
+  .object({
+    categoryCode: z.string(),
+    plateNumber: z.string().trim().toUpperCase().min(3).max(20),
+    make: z.string().trim().max(50),
+    model: z.string().trim().max(50),
+    color: z.string().trim().max(30),
+    year: z.number().int().min(1970).max(2100).optional(),
+  });
+export const goOnlineBody = z.object({ location: latLng });
+export const locationBody = latLng.extend({ heading: z.number().min(0).max(360).optional() });
+
 driversRouter.get("/me", async (req, res) => {
   const data = await withContext(req.ctx, async (db) => {
     const { rows: [profile] } = await db.query(
@@ -30,13 +50,7 @@ driversRouter.get("/me", async (req, res) => {
 });
 
 driversRouter.put("/me/profile", async (req, res) => {
-  const body = z
-    .object({
-      licenseNumber: z.string().trim().min(3).max(50),
-      licenseExpiresOn: z.iso.date(),
-      nationalId: z.string().trim().max(50).optional(),
-    })
-    .parse(req.body);
+  const body = driverProfileBody.parse(req.body);
   await withContext(req.ctx, (db) =>
     db.query(
       `UPDATE driver_profiles SET license_number = $1, license_expires_on = $2, national_id = $3
@@ -48,16 +62,7 @@ driversRouter.put("/me/profile", async (req, res) => {
 });
 
 driversRouter.post("/me/vehicles", async (req, res) => {
-  const body = z
-    .object({
-      categoryCode: z.string(),
-      plateNumber: z.string().trim().toUpperCase().min(3).max(20),
-      make: z.string().trim().max(50),
-      model: z.string().trim().max(50),
-      color: z.string().trim().max(30),
-      year: z.number().int().min(1970).max(2100).optional(),
-    })
-    .parse(req.body);
+  const body = addVehicleBody.parse(req.body);
   const vehicle = await withContext(req.ctx, async (db) => {
     try {
       const { rows } = await db.query(
@@ -77,7 +82,7 @@ driversRouter.post("/me/vehicles", async (req, res) => {
 
 /** Go online: requires approval and an approved current vehicle. */
 driversRouter.post("/me/online", async (req, res) => {
-  const { location } = z.object({ location: latLng }).parse(req.body);
+  const { location } = goOnlineBody.parse(req.body);
   const category = await withContext(req.ctx, async (db) => {
     const { rows: [row] } = await db.query(
       `SELECT dp.approval_status, dp.availability, v.category_code
@@ -109,7 +114,7 @@ driversRouter.post("/me/offline", async (req, res) => {
 
 /** HTTP fallback for location pings (the socket is preferred). */
 driversRouter.post("/me/location", async (req, res) => {
-  const body = latLng.extend({ heading: z.number().min(0).max(360).optional() }).parse(req.body);
+  const body = locationBody.parse(req.body);
   await recordPing(req.ctx.userId!, body);
   res.status(204).end();
 });
@@ -117,7 +122,8 @@ driversRouter.post("/me/location", async (req, res) => {
 driversRouter.get("/me/offers", async (req, res) => {
   const rows = await withContext(req.ctx, async (db) =>
     (await db.query(
-      `SELECT o.trip_id AS "tripId", o.distance_m AS "distanceToPickupM", o.expires_at AS "expiresAt",
+      `SELECT o.trip_id AS "tripId", o.distance_m AS "distanceToPickupM", o.eta_s AS "etaToPickupS",
+              o.expires_at AS "expiresAt",
               t.fare_estimate AS "fareEstimate", t.pickup_address AS "pickupAddress",
               t.dropoff_address AS "dropoffAddress", t.est_distance_m AS "tripDistanceM"
          FROM trip_offers o JOIN trips t ON t.id = o.trip_id

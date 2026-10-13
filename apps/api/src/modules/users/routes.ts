@@ -9,6 +9,17 @@ usersRouter.use(requireAuth);
 
 const ME = `id, phone, role, status, full_name AS "fullName", email, locale, created_at AS "createdAt"`;
 
+
+// Request schemas (exported: the OpenAPI spec is built from them).
+export const updateMeBody = z
+  .object({
+    fullName: z.string().trim().min(2).max(100).optional(),
+    email: z.email().optional(),
+    locale: z.enum(["am", "en", "om", "ti"]).optional(),
+  });
+export const pushTokenBody = z
+  .object({ token: z.string().min(10).max(4096), platform: z.enum(["web", "android", "ios"]) });
+
 usersRouter.get("/me", async (req, res) => {
   const user = await withContext(req.ctx, async (db) => {
     const { rows } = await db.query(`SELECT ${ME} FROM users WHERE id = app.uid()`);
@@ -19,13 +30,7 @@ usersRouter.get("/me", async (req, res) => {
 });
 
 usersRouter.patch("/me", async (req, res) => {
-  const body = z
-    .object({
-      fullName: z.string().trim().min(2).max(100).optional(),
-      email: z.email().optional(),
-      locale: z.enum(["am", "en", "om", "ti"]).optional(),
-    })
-    .parse(req.body);
+  const body = updateMeBody.parse(req.body);
   const user = await withContext(req.ctx, async (db) => {
     const { rows } = await db.query(
       `UPDATE users SET full_name = coalesce($1, full_name), email = coalesce($2, email),
@@ -39,9 +44,7 @@ usersRouter.patch("/me", async (req, res) => {
 });
 
 usersRouter.put("/me/push-token", async (req, res) => {
-  const body = z
-    .object({ token: z.string().min(10).max(4096), platform: z.enum(["web", "android", "ios"]) })
-    .parse(req.body);
+  const body = pushTokenBody.parse(req.body);
   await withContext(req.ctx, (db) =>
     db.query(
       `INSERT INTO push_tokens (token, user_id, platform) VALUES ($1, app.uid(), $2)

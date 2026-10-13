@@ -46,9 +46,7 @@ adminRouter.get("/stats", requirePermission("dashboard.view"), async (req, res) 
 // ───────────────────────── Riders & drivers ─────────────────────────
 
 adminRouter.get("/users", requirePermission("users.view", "users.suspend", "users.reset_password"), async (req, res) => {
-  const q = page
-    .extend({ role: z.enum(["customer", "driver", "admin", "staff"]).optional(), search: z.string().optional() })
-    .parse(req.query);
+  const q = adminUsersQuery.parse(req.query);
   const rows = await withContext(req.ctx, async (db) =>
     (await db.query(
       `SELECT u.id, u.phone, u.role, u.status, u.full_name AS "fullName", u.created_at AS "createdAt",
@@ -66,7 +64,7 @@ adminRouter.get("/users", requirePermission("users.view", "users.suspend", "user
 
 adminRouter.patch("/users/:id/status", requirePermission("users.suspend"), async (req, res) => {
   const { id } = uuidParam.parse(req.params);
-  const { status } = z.object({ status: z.enum(["active", "suspended"]) }).parse(req.body);
+  const { status } = userStatusBody.parse(req.body);
   if (id === req.ctx.userId) throw new AppError(422, "CANNOT_CHANGE_SELF", "You can't change your own status");
   const user = await withContext(req.ctx, async (db) => {
     // RLS: staff only reach riders and drivers; admins reach everyone.
@@ -125,13 +123,7 @@ adminRouter.get("/drivers/pending", requirePermission("drivers.view", "drivers.a
 /** Approve/reject a driver and (optionally) one of their vehicles. */
 adminRouter.post("/drivers/:id/review", requirePermission("drivers.approve"), async (req, res) => {
   const { id } = uuidParam.parse(req.params);
-  const body = z
-    .object({
-      decision: z.enum(["approved", "rejected", "suspended"]),
-      vehicleId: z.uuid().optional(),
-      note: z.string().max(500).optional(),
-    })
-    .parse(req.body);
+  const body = driverReviewBody.parse(req.body);
   const result = await withContext(req.ctx, async (db) => {
     const { rows: [p] } = await db.query(
       `UPDATE driver_profiles SET approval_status = $2::approval_status,
@@ -161,7 +153,7 @@ adminRouter.post("/drivers/:id/review", requirePermission("drivers.approve"), as
 // ───────────────────────── Trips ─────────────────────────
 
 adminRouter.get("/trips", requirePermission("trips.view"), async (req, res) => {
-  const q = page.extend({ status: z.string().optional() }).parse(req.query);
+  const q = adminTripsQuery.parse(req.query);
   const rows = await withContext(req.ctx, async (db) =>
     (await db.query(
       `SELECT t.id, t.status, t.category_code AS "categoryCode", t.fare_estimate AS "fareEstimate",
@@ -180,7 +172,7 @@ adminRouter.get("/trips", requirePermission("trips.view"), async (req, res) => {
 
 adminRouter.post("/trips/:id/cancel", requirePermission("trips.cancel"), async (req, res) => {
   const { id } = uuidParam.parse(req.params);
-  const { reason } = z.object({ reason: z.string().min(3).max(300) }).parse(req.body);
+  const { reason } = adminCancelTripBody.parse(req.body);
   const trip = await cancelTrip(req.ctx, id, reason);
   await withContext(req.ctx, (db) => audit(db, "trip.cancel", "trip", id, { reason }));
   res.json(trip);
@@ -191,7 +183,7 @@ adminRouter.post("/trips/:id/cancel", requirePermission("trips.cancel"), async (
 /** Day book: every money movement on one Addis Ababa calendar day (default today). */
 adminRouter.get("/finance/daybook", requirePermission("finance.daybook.view"), async (req, res) => {
   const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Africa/Addis_Ababa" }).format(new Date());
-  const { date } = z.object({ date: z.iso.date().default(today) }).parse(req.query);
+  const date = daybookQuery.parse(req.query).date ?? today;
   const book = await withContext(req.ctx, async (db) =>
     (await db.query("SELECT app.daybook($1::date) AS b", [date])).rows[0].b,
   );
@@ -217,13 +209,7 @@ adminRouter.get("/wallets/:id", requirePermission("finance.wallets.view", "finan
 /** Manual credit (+) or debit (−) in santim, with a mandatory reason. */
 adminRouter.post("/wallets/:id/adjust", requirePermission("finance.wallets.adjust"), async (req, res) => {
   const { id } = uuidParam.parse(req.params);
-  const body = z
-    .object({
-      amount: z.number().int().refine((v) => v !== 0, "amount must not be zero")
-        .refine((v) => Math.abs(v) <= 10_000_000, "amount too large (max 100,000 ETB)"),
-      reason: z.string().trim().min(5).max(300),
-    })
-    .parse(req.body);
+  const body = walletAdjustBody.parse(req.body);
   const result = await withContext(req.ctx, async (db) => {
     const { rows: [w] } = await db.query(
       "UPDATE wallets SET balance = balance + $2, updated_at = now() WHERE user_id = $1 RETURNING balance",
@@ -256,7 +242,7 @@ adminRouter.get("/settings", requirePermission("pricing.manage"), async (req, re
 });
 
 adminRouter.patch("/settings", requirePermission("pricing.manage"), async (req, res) => {
-  const body = SETTINGS.strict().parse(req.body);
+  const body = settingsBody.parse(req.body);
   await withContext(req.ctx, async (db) => {
     for (const [api, value] of Object.entries(body)) {
       await db.query(
@@ -288,9 +274,10 @@ adminRouter.get("/audit", requirePermission("audit.view"), async (req, res) => {
 
 // ───────────────────────── Staff management (admins only) ─────────────────────────
 
-const staffRouter = Router();
+export const staffRouter = Router();
+export const STAFF_MOUNT = "/staff";
 staffRouter.use(requireRole("admin"));
-adminRouter.use("/staff", staffRouter);
+adminRouter.use(STAFF_MOUNT, staffRouter);
 
 const permissionList = z.array(z.enum(PERMISSIONS)).max(PERMISSIONS.length).transform((l) => [...new Set(l)]);
 
@@ -322,13 +309,7 @@ staffRouter.get("/", async (req, res) => {
 
 /** Create a staff account. Returns a temporary password (shown once) for the admin to hand over. */
 staffRouter.post("/", async (req, res) => {
-  const body = z
-    .object({
-      phone: z.string(),
-      fullName: z.string().trim().min(2).max(100),
-      permissions: permissionList.default([]),
-    })
-    .parse(req.body);
+  const body = createStaffBody.parse(req.body);
   const phone = normalizeEthiopianPhone(body.phone);
   if (!phone) throw new AppError(422, "VALIDATION_FAILED", "Not a valid Ethiopian mobile number");
 
@@ -367,7 +348,7 @@ staffRouter.post("/:id/reset-password", async (req, res) => {
 /** Replace a staff member's permission list (the toggles). Effective on their next request. */
 staffRouter.put("/:id/permissions", async (req, res) => {
   const { id } = uuidParam.parse(req.params);
-  const { permissions } = z.object({ permissions: permissionList }).parse(req.body);
+  const { permissions } = staffPermissionsBody.parse(req.body);
   await withContext(req.ctx, async (db) => {
     const { rowCount } = await db.query("SELECT 1 FROM users WHERE id = $1 AND role = 'staff'", [id]);
     if (!rowCount) throw notFound("Staff member");
@@ -376,3 +357,32 @@ staffRouter.put("/:id/permissions", async (req, res) => {
   });
   res.json({ id, permissions });
 });
+
+// Request schemas (exported: the OpenAPI spec is built from them).
+export const adminUsersQuery = page
+  .extend({ role: z.enum(["customer", "driver", "admin", "staff"]).optional(), search: z.string().optional() });
+export const userStatusBody = z.object({ status: z.enum(["active", "suspended"]) });
+export const driverReviewBody = z
+  .object({
+    decision: z.enum(["approved", "rejected", "suspended"]),
+    vehicleId: z.uuid().optional(),
+    note: z.string().max(500).optional(),
+  });
+export const adminTripsQuery = page.extend({ status: z.string().optional() });
+export const adminCancelTripBody = z.object({ reason: z.string().min(3).max(300) });
+/** Day book date (YYYY-MM-DD, Addis Ababa calendar day); defaults to today. */
+export const daybookQuery = z.object({ date: z.iso.date().optional() });
+export const walletAdjustBody = z
+  .object({
+    amount: z.number().int().refine((v) => v !== 0, "amount must not be zero")
+      .refine((v) => Math.abs(v) <= 10_000_000, "amount too large (max 100,000 ETB)"),
+    reason: z.string().trim().min(5).max(300),
+  });
+export const settingsBody = SETTINGS.strict();
+export const createStaffBody = z
+  .object({
+    phone: z.string(),
+    fullName: z.string().trim().min(2).max(100),
+    permissions: permissionList.default([]),
+  });
+export const staffPermissionsBody = z.object({ permissions: permissionList });

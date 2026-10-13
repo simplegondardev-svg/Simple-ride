@@ -124,6 +124,12 @@ Check dispatch end-to-end with `pnpm --filter @simple-ride/api simulate` against
 - Driver pings never touch Postgres on the hot path. The 30 s throttle keeps write load at about 2 writes/min per online driver.
 
 ## API conventions (for web and Flutter)
+
+The machine-readable contract is [`docs/openapi.json`](openapi.json) (OpenAPI 3.1, also served at
+`GET /api/v1/openapi.json`), generated from the same Zod schemas the routes validate with
+(`src/contract/`). Error codes and what apps should do about each: [`ERRORS.md`](ERRORS.md).
+Dart client: `tools/generate-dart-client.sh`.
+
 - Base path `/api/v1`; `Authorization: Bearer <accessToken>`.
 - JSON keys are camelCase; timestamps are ISO-8601 UTC; money is integer santim with `currency: "ETB"`.
 - Coordinates are always `{ "lat": 9.03, "lng": 38.75 }`. (PostGIS stores lng/lat; the API hides that.)

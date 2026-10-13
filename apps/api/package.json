@@ -12,7 +12,8 @@
     "db:seed": "tsx --env-file-if-exists=.env src/db/seed.ts",
     "test": "vitest run",
     "reset-password": "tsx --env-file-if-exists=.env src/db/reset-password.ts",
-    "simulate": "tsx --env-file-if-exists=.env scripts/simulate.ts"
+    "simulate": "tsx --env-file-if-exists=.env scripts/simulate.ts",
+    "openapi": "NODE_ENV=test tsx --env-file-if-exists=.env scripts/export-openapi.ts"
   },
   "dependencies": {
     "cors": "^2.8.6",
@@ -27,6 +28,7 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@readme/openapi-parser": "^9.1.0",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/jsonwebtoken": "^9.0.10",
