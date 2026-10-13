@@ -154,7 +154,9 @@ but not independently confirmed, **[Guessing]** assumption that needs validation
 
 ## 4. Roadmap
 
-**Phase 1: launch-ready MVP (Addis Ababa)**
+**Phase 1: launch-ready MVP (Addis Ababa).** Broken into checkpoints with exit criteria in
+[`MVP_CHECKPOINTS.md`](MVP_CHECKPOINTS.md), which takes priority over this summary. (Change: telebirr driver
+top-ups move after the pilot; during the pilot staff record cash top-ups with the wallet-adjustment tool.)
 1. Flutter rider and driver apps against the existing API (see §5).
 2. Real SMS provider, FCM push, a Gebeta key with verified endpoints, and a restricted tiles key for the apps.
 3. Dispatch v2 (ETA ranking and sequential offers), cancellation fees, driver wallet top-up via telebirr.

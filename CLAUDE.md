@@ -7,7 +7,8 @@ Ride hailing for Ethiopia (Addis Ababa first). pnpm monorepo:
 - Flutter rider and driver apps are planned; the API is their contract (see `docs/PLAN.md` §5)
 
 Read `docs/ARCHITECTURE.md` (how it works, security model, endpoints) and `docs/PLAN.md`
-(research, features, roadmap) before larger changes.
+(research, features, roadmap) before larger changes. **The path to the MVP is `docs/MVP_CHECKPOINTS.md`**:
+work in checkpoint order, tick boxes as work lands, and don't call a checkpoint done until its exit criteria pass.
 
 ## Commands
 
