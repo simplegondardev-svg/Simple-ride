@@ -79,6 +79,7 @@ function StaffCard({ staff, groups, onChanged }: { staff: Staff; groups: [string
   const [perms, setPerms] = useState(new Set(staff.permissions));
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string>();
+  const [temp, setTemp] = useState<string>();
   const dirty = perms.size !== staff.permissions.length || staff.permissions.some((p) => !perms.has(p));
 
   async function save() {
@@ -92,6 +93,12 @@ function StaffCard({ staff, groups, onChanged }: { staff: Staff; groups: [string
     } finally {
       setSaving(false);
     }
+  }
+
+  async function resetPassword() {
+    if (!confirm(`Reset ${staff.fullName}'s password? They'll be signed out everywhere.`)) return;
+    const res = await api<{ temporaryPassword: string }>(`admin/staff/${staff.id}/reset-password`, { body: {} });
+    setTemp(res.temporaryPassword);
   }
 
   async function setStatus(status: "active" | "suspended") {
@@ -109,11 +116,13 @@ function StaffCard({ staff, groups, onChanged }: { staff: Staff; groups: [string
         <div className="row">
           <button className="secondary" onClick={() => setPerms(new Set(groups.flatMap(([, p]) => p.map((x) => x.code))))}>All</button>
           <button className="secondary" onClick={() => setPerms(new Set())}>None</button>
+          <button className="secondary" onClick={resetPassword}>Reset password</button>
           {staff.status === "active"
             ? <button className="secondary" onClick={() => setStatus("suspended")}>Suspend</button>
             : <button className="secondary" onClick={() => setStatus("active")}>Reactivate</button>}
         </div>
       </div>
+      {temp && <TempPassword who={staff.fullName} password={temp} onDone={() => setTemp(undefined)} />}
       <PermissionToggles groups={groups} value={perms} onToggle={(c) => setPerms(toggle(perms, c))} />
       <div className="row">
         <button disabled={!dirty || saving} onClick={save}>{saving ? "Saving…" : "Save permissions"}</button>
@@ -123,8 +132,21 @@ function StaffCard({ staff, groups, onChanged }: { staff: Staff; groups: [string
   );
 }
 
+/** A temporary password is shown exactly once; the API never returns it again. */
+function TempPassword({ who, password, onDone }: { who: string; password: string; onDone: () => void }) {
+  return (
+    <div className="card notice" role="alert">
+      <p style={{ marginTop: 0 }}>Temporary password for <b>{who}</b>:</p>
+      <p className="temp-pw">{password}</p>
+      <p className="muted">Give it to them in person or by phone. It won't be shown again. They'll choose their own password when they first log in.</p>
+      <button onClick={onDone}>Done</button>
+    </div>
+  );
+}
+
 function NewStaff({ groups, onCreated }: { groups: [string, Permission[]][]; onCreated: () => void }) {
   const [open, setOpen] = useState(false);
+  const [created, setCreated] = useState<{ who: string; password: string }>();
   const [phone, setPhone] = useState("");
   const [fullName, setFullName] = useState("");
   const [perms, setPerms] = useState(new Set<string>());
@@ -134,7 +156,8 @@ function NewStaff({ groups, onCreated }: { groups: [string, Permission[]][]; onC
     e.preventDefault();
     setError(undefined);
     try {
-      await api("admin/staff", { body: { phone, fullName, permissions: [...perms] } });
+      const res = await api<{ temporaryPassword: string }>("admin/staff", { body: { phone, fullName, permissions: [...perms] } });
+      setCreated({ who: fullName, password: res.temporaryPassword });
       setOpen(false); setPhone(""); setFullName(""); setPerms(new Set());
       onCreated();
     } catch (err) {
@@ -142,6 +165,7 @@ function NewStaff({ groups, onCreated }: { groups: [string, Permission[]][]; onC
     }
   }
 
+  if (created) return <TempPassword who={created.who} password={created.password} onDone={() => setCreated(undefined)} />;
   if (!open) return <button onClick={() => setOpen(true)}>Add staff member</button>;
   return (
     <form className="card" onSubmit={create}>
@@ -156,7 +180,7 @@ function NewStaff({ groups, onCreated }: { groups: [string, Permission[]][]; onC
           <input id="sph" inputMode="tel" placeholder="09 11 22 33 44" value={phone} onChange={(e) => setPhone(e.target.value)} required />
         </div>
       </div>
-      <p className="muted">They log in with this phone number and choose “Staff”. They can only do what you switch on.</p>
+      <p className="muted">You'll get a temporary password to hand over. They log in with this phone number, choose “Staff”, and set their own password. They can only do what you switch on.</p>
       <PermissionToggles groups={groups} value={perms} onToggle={(c) => setPerms(toggle(perms, c))} />
       {error && <p className="error">{error}</p>}
       <div className="row">

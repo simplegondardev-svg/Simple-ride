@@ -2,7 +2,8 @@ import { Router } from "express";
 import { z } from "zod";
 import { requireRole } from "../../auth/middleware.js";
 import { loadPermissions, PERMISSIONS, requirePermission } from "../../auth/permissions.js";
-import { withContext } from "../../db/context.js";
+import { issueTemporaryPassword } from "../../auth/credentials.js";
+import { SYSTEM, withContext } from "../../db/context.js";
 import { AppError, notFound } from "../../lib/errors.js";
 import { normalizeEthiopianPhone } from "../../lib/phone.js";
 import { page, uuidParam } from "../../lib/schemas.js";
@@ -44,7 +45,7 @@ adminRouter.get("/stats", requirePermission("dashboard.view"), async (req, res) 
 
 // ───────────────────────── Riders & drivers ─────────────────────────
 
-adminRouter.get("/users", requirePermission("users.view", "users.suspend"), async (req, res) => {
+adminRouter.get("/users", requirePermission("users.view", "users.suspend", "users.reset_password"), async (req, res) => {
   const q = page
     .extend({ role: z.enum(["customer", "driver", "admin", "staff"]).optional(), search: z.string().optional() })
     .parse(req.query);
@@ -80,6 +81,26 @@ adminRouter.patch("/users/:id/status", requirePermission("users.suspend"), async
     return u;
   });
   res.json(user);
+});
+
+/**
+ * Support: a rider or driver forgot their password. Issues a temporary one
+ * to read out to them (shown once); they choose their own at next login.
+ */
+adminRouter.post("/users/:id/reset-password", requirePermission("users.reset_password"), async (req, res) => {
+  const { id } = uuidParam.parse(req.params);
+  // Visibility check in the caller's own context: RLS only lets staff reach
+  // riders and drivers. Admin and staff passwords are reset elsewhere.
+  const target = await withContext(req.ctx, async (db) =>
+    (await db.query("SELECT role FROM users WHERE id = $1", [id])).rows[0],
+  );
+  if (!target) throw notFound("User");
+  if (target.role !== "customer" && target.role !== "driver") {
+    throw new AppError(403, "FORBIDDEN", "Use staff management to reset staff passwords");
+  }
+  const temporaryPassword = await withContext(SYSTEM, (db) => issueTemporaryPassword(db, id));
+  await withContext(req.ctx, (db) => audit(db, "user.reset_password", "user", id, {}));
+  res.json({ temporaryPassword });
 });
 
 // ───────────────────────── Driver onboarding ─────────────────────────
@@ -271,7 +292,7 @@ staffRouter.get("/", async (req, res) => {
   res.json({ data: rows });
 });
 
-/** Create a staff account. They log in with OTP on that phone, choosing "Staff". */
+/** Create a staff account. Returns a temporary password (shown once) for the admin to hand over. */
 staffRouter.post("/", async (req, res) => {
   const body = z
     .object({
@@ -299,7 +320,20 @@ staffRouter.post("/", async (req, res) => {
     await audit(db, "staff.create", "user", rows[0].id, { phone, permissions: body.permissions });
     return { ...rows[0], permissions: body.permissions };
   });
-  res.status(201).json(staff);
+  // Shown once. They must replace it with their own at first login.
+  const temporaryPassword = await withContext(SYSTEM, (db) => issueTemporaryPassword(db, staff.id));
+  res.status(201).json({ ...staff, temporaryPassword });
+});
+
+staffRouter.post("/:id/reset-password", async (req, res) => {
+  const { id } = uuidParam.parse(req.params);
+  const exists = await withContext(req.ctx, async (db) =>
+    (await db.query("SELECT 1 FROM users WHERE id = $1 AND role = 'staff'", [id])).rowCount,
+  );
+  if (!exists) throw notFound("Staff member");
+  const temporaryPassword = await withContext(SYSTEM, (db) => issueTemporaryPassword(db, id));
+  await withContext(req.ctx, (db) => audit(db, "staff.reset_password", "user", id, {}));
+  res.json({ temporaryPassword });
 });
 
 /** Replace a staff member's permission list (the toggles). Effective on their next request. */

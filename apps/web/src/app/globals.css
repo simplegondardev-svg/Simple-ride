@@ -58,3 +58,5 @@ label.toggle { display: flex; gap: 8px; align-items: flex-start; color: var(--te
 label.toggle input { width: auto; margin-top: 3px; }
 .split-even { display: grid; gap: 12px; grid-template-columns: 1fr; }
 @media (min-width: 640px) { .split-even { grid-template-columns: 1fr 1fr; } }
+.notice { border-color: var(--brand); margin: 12px 0; }
+.temp-pw { font: 600 22px/1.2 ui-monospace, monospace; letter-spacing: .04em; user-select: all; margin: 8px 0; }

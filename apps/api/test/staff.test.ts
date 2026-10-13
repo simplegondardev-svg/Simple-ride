@@ -5,7 +5,7 @@ import { PERMISSIONS } from "../src/auth/permissions.js";
 import { SYSTEM, withContext, type DbContext } from "../src/db/context.js";
 import { pool } from "../src/db/pool.js";
 import { redis } from "../src/lib/redis.js";
-import { grant, makeUser, randomPhone } from "./helpers.js";
+import { grant, makeBackoffice, makeUser, PASSWORD, randomPhone } from "./helpers.js";
 
 const app = createApp();
 const as = (userId: string, role: DbContext["role"]): DbContext => ({ userId, role });
@@ -13,12 +13,8 @@ const q = (ctx: DbContext, sql: string, params: unknown[] = []) =>
   withContext(ctx, (db) => db.query(sql, params));
 const bearer = (token: string) => ({ Authorization: `Bearer ${token}` });
 
-async function login(phone: string, role: "customer" | "driver" | "admin" | "staff") {
-  const otp = await request(app).post("/api/v1/auth/otp/request").send({ phone }).expect(202);
-  return request(app)
-    .post("/api/v1/auth/otp/verify")
-    .send({ phone, code: otp.body.devCode, role, platform: "web" });
-}
+const login = (phone: string, role: "admin" | "staff", password = PASSWORD, newPassword?: string) =>
+  request(app).post("/api/v1/auth/login").send({ phone, password, role, platform: "web", newPassword });
 
 let admin: string, staff: string, customer: string, driver: string, otherStaff: string;
 let trip: string;
@@ -154,16 +150,17 @@ describe("HTTP: admin manages staff, staff use what they're given", () => {
   let staffId: string;
   const staffPhone = randomPhone();
 
+  let temporaryPassword: string;
+
   beforeAll(async () => {
-    const adminPhone = randomPhone();
-    await withContext(SYSTEM, (db) =>
-      db.query("INSERT INTO users (phone, role) VALUES ($1, 'admin')", [adminPhone]));
-    adminToken = (await login(adminPhone, "admin")).body.accessToken;
+    const { phone } = await makeBackoffice("admin");
+    adminToken = (await login(phone, "admin")).body.accessToken;
   });
 
-  it("staff can't self-register through OTP", async () => {
-    const res = await login(randomPhone(), "staff");
-    expect(res.status).toBe(403);
+  it("staff can't self-register", async () => {
+    const res = await request(app).post("/api/v1/auth/register")
+      .send({ phone: randomPhone(), password: PASSWORD, role: "staff", platform: "web" });
+    expect(res.status).toBe(422);
   });
 
   it("admin creates a staff member with only the day book", async () => {
@@ -171,11 +168,24 @@ describe("HTTP: admin manages staff, staff use what they're given", () => {
       .send({ phone: `0${staffPhone.slice(4)}`, fullName: "Hana Finance", permissions: ["finance.daybook.view"] })
       .expect(201);
     staffId = res.body.id;
+    temporaryPassword = res.body.temporaryPassword;
     expect(res.body.permissions).toEqual(["finance.daybook.view"]);
+    expect(temporaryPassword).toMatch(/^\w{4}-\w{4}-\w{4}$/);
 
     const bad = await request(app).post("/api/v1/admin/staff").set(bearer(adminToken))
       .send({ phone: randomPhone(), fullName: "X Y", permissions: ["everything.please"] });
     expect(bad.status).toBe(422);
+  });
+
+  it("first login with the temporary password requires choosing a new one", async () => {
+    const first = await login(staffPhone, "staff", temporaryPassword);
+    expect(first.status).toBe(409);
+    expect(first.body.error.code).toBe("PASSWORD_CHANGE_REQUIRED");
+    const same = await login(staffPhone, "staff", temporaryPassword, temporaryPassword);
+    expect(same.body.error.code).toBe("WEAK_PASSWORD");
+    await login(staffPhone, "staff", temporaryPassword, PASSWORD).expect(200);
+    // The temporary password no longer works.
+    await login(staffPhone, "staff", temporaryPassword).expect(401);
   });
 
   it("staff logs in and sees exactly their permissions", async () => {
@@ -219,6 +229,15 @@ describe("HTTP: admin manages staff, staff use what they're given", () => {
 
     const log = await request(app).get("/api/v1/admin/audit").set(bearer(adminToken)).expect(200);
     expect(log.body.data.some((a: any) => a.action === "wallet.adjust" && a.actorId === staffId)).toBe(true);
+  });
+
+  it("admin resets a staff password: old sessions die, new temporary password works", async () => {
+    const reset = await request(app).post(`/api/v1/admin/staff/${staffId}/reset-password`)
+      .set(bearer(adminToken)).expect(200);
+    await login(staffPhone, "staff").expect(401); // old password gone
+    const relog = await login(staffPhone, "staff", reset.body.temporaryPassword, "Another-Strong-Pass1");
+    expect(relog.status).toBe(200);
+    staffToken = relog.body.accessToken;
   });
 
   it("suspending a staff member locks them out at once, before the token expires", async () => {

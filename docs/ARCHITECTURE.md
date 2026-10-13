@@ -8,7 +8,7 @@
  Browser ─▶ Next.js (BFF, httpOnly ─▶ Express API ──┤
             cookies) /api/proxy      │  + Socket.IO │
                                       │       └─────────────── Redis
-                                      │          OTP · rate limits · live driver GEO index
+                                      │          rate limits · live driver GEO index
                                       ▼          · Gebeta response cache · (Socket.IO adapter)
                                 Gebeta Maps API
                           (routing, geocoding; key stays server-side)
@@ -20,7 +20,7 @@
 |---|---|
 | `db/context.ts` | `withContext(ctx, fn)` is the **only** way to query. It opens a transaction and sets the RLS context. |
 | `db/migrations/` | Plain SQL, forward-only. `0003_rls.sql` holds every policy and guard. |
-| `auth/` | OTP (Redis), JWT access tokens, rotating refresh sessions, role middleware. |
+| `auth/` | Password login (scrypt), JWT access tokens, rotating refresh sessions, role and permission middleware. |
 | `modules/trips/state-machine.ts` | The single definition of the trip lifecycle. |
 | `modules/trips/service.ts` | Request, dispatch, accept, transitions, settlement, sweeps. |
 | `modules/drivers/presence.ts` | Live positions in Redis; throttled persistence to PostGIS. |
@@ -46,6 +46,27 @@
    should not expose data. If an SQL-injection bug let an attacker call `set_config`, RLS would no longer protect
    anything, so all SQL stays parameterised.
 
+## Authentication
+
+Every role logs in with **phone number + password** (`POST /auth/login`). Riders and drivers sign up with
+`POST /auth/register`; admin and staff accounts can't be self-registered.
+
+- **Storage:** scrypt hashes (salted, parameters stored per hash) in `user_credentials`, a table only the
+  `system` context can read. Not even an admin's database queries can return a hash.
+- **Temporary passwords:** issued when an admin creates staff, when an admin resets staff, when support
+  (`users.reset_password`) resets a rider or driver, and by the seed or `pnpm reset-password` CLI. They are
+  shown once, sign the user out everywhere, and must be replaced at the next login (`409
+  PASSWORD_CHANGE_REQUIRED`, then repeat the login with `newPassword`).
+- **Guessing:** 5 wrong passwords lock the account for 15 minutes (`423 ACCOUNT_LOCKED`). Per-IP limits are
+  deliberately loose, because mobile carriers share IPs between many subscribers. Wrong password and unknown
+  phone return the identical `401 INVALID_CREDENTIALS`, with the same timing.
+- **Sessions:** riders and drivers 30 days; admin and staff 12 hours, absolute. Changing a password signs
+  out every other device.
+- **Password rules:** 10–128 characters, must not contain the phone number, not one repeated character.
+- **Known gap:** phone numbers are not verified (`users.phone_verified_at` stays NULL), so anyone can register
+  any number and there is no self-service "forgot password". The SMS code module (`src/auth/otp.ts`) is kept
+  for when verification is switched on.
+
 ## Staff permissions
 
 - `admin`: full access, and the only role that creates staff and changes their permissions. There is no "manage
@@ -65,6 +86,7 @@
 |---|---|
 | `dashboard.view` | Dashboard statistics |
 | `users.view` / `users.suspend` | View riders and drivers / suspend or reactivate them |
+| `users.reset_password` | Issue a temporary password to a rider or driver who forgot theirs |
 | `drivers.view` / `drivers.approve` | View driver profiles and vehicles / approve, reject, suspend |
 | `trips.view` / `trips.cancel` | View trips, timelines, ratings / cancel active trips |
 | `finance.daybook.view` | The day book: one Addis Ababa day of trips and wallet movements |
@@ -101,7 +123,8 @@ v2 (see PLAN.md) ranks candidates by **road ETA** using Gebeta's one-to-many end
 ### Endpoints (v1)
 | Method | Path | Who |
 |---|---|---|
-| POST | `/auth/otp/request` · `/auth/otp/verify` · `/auth/refresh` · `/auth/logout` | public |
+| POST | `/auth/register` · `/auth/login` · `/auth/refresh` · `/auth/logout` | public |
+| POST | `/auth/password/change` | any signed-in user |
 | GET/PATCH | `/users/me` · PUT `/users/me/push-token` · GET `/users/me/wallet` | any user |
 | GET | `/catalog/vehicle-categories` | public |
 | GET | `/geo/search?q=` · `/geo/reverse?lat=&lng=` | any user |
@@ -113,7 +136,8 @@ v2 (see PLAN.md) ranks candidates by **road ETA** using Gebeta's one-to-many end
 | GET/PUT/POST | `/drivers/me` · `/drivers/me/profile` · `/drivers/me/vehicles` · `/drivers/me/online` · `/drivers/me/offline` · `/drivers/me/location` · `/drivers/me/offers` | driver |
 | GET | `/admin/me` · `/admin/permissions` | admin, staff |
 | GET/PATCH/POST | `/admin/stats` · `/admin/users` · `/admin/users/:id/status` · `/admin/drivers/pending` · `/admin/drivers/:id/review` · `/admin/trips` · `/admin/trips/:id/cancel` · `/admin/finance/daybook?date=` · `/admin/wallets/:id` · `/admin/wallets/:id/adjust` · `/admin/audit` | admin, or staff with the matching permission |
-| GET/POST/PUT | `/admin/staff` · `/admin/staff/:id/permissions` | admin only |
+| POST | `/admin/users/:id/reset-password` | admin, or staff with `users.reset_password` |
+| GET/POST/PUT | `/admin/staff` · `/admin/staff/:id/permissions` · `/admin/staff/:id/reset-password` | admin only |
 
 ### Socket.IO events
 | Direction | Event | Payload |

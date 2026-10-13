@@ -1,15 +1,32 @@
 import { Router } from "express";
+import type { PoolClient } from "pg";
 import { z } from "zod";
+import { env } from "../config/env.js";
 import { SYSTEM, withContext } from "../db/context.js";
 import { AppError } from "../lib/errors.js";
 import { normalizeEthiopianPhone } from "../lib/phone.js";
 import { rateLimit } from "../lib/rate-limit.js";
-import { issueOtp, verifyOtp } from "./otp.js";
-import { createSession, revokeSession, rotateSession, signAccessToken } from "./tokens.js";
+import { requireAuth } from "./middleware.js";
+import { dummyHash, hashPassword, passwordProblem, verifyPassword } from "./password.js";
+import { createSession, revokeSession, rotateSession, signAccessToken, type UserRole } from "./tokens.js";
 
+/**
+ * Phone + password authentication for every role.
+ *
+ *   POST /auth/register         riders and drivers create an account
+ *   POST /auth/login            everyone; may answer PASSWORD_CHANGE_REQUIRED
+ *   POST /auth/password/change  signed-in user changes their password
+ *   POST /auth/refresh, /auth/logout
+ *
+ * Admin and staff accounts are never self-registered: the seed creates the
+ * first admin, admins create staff. SMS codes (otp.ts) are not exposed for
+ * now; users.phone_verified_at records that numbers are unverified.
+ */
 export const authRouter = Router();
 
 const USER_COLS = `id, phone, role, status, full_name AS "fullName", locale`;
+const MAX_FAILED = 5;
+const LOCK_MINUTES = 15;
 
 const phoneSchema = z.string().transform((v, ctx) => {
   const phone = normalizeEthiopianPhone(v);
@@ -20,73 +37,187 @@ const phoneSchema = z.string().transform((v, ctx) => {
   return phone;
 });
 
-authRouter.post("/otp/request", async (req, res) => {
-  const { phone } = z.object({ phone: phoneSchema }).parse(req.body);
-  await rateLimit(`otp:phone:${phone}`, 3, 600);
-  await rateLimit(`otp:ip:${req.ip}`, 20, 600);
-  const devCode = await issueOtp(phone);
-  res.status(202).json({ phone, expiresIn: 300, ...(devCode && { devCode }) });
-});
-
-const verifySchema = z.object({
-  phone: phoneSchema,
-  code: z.string().regex(/^\d{6}$/),
-  // Which app is logging in. The driver app sends "driver"; admins and staff
-  // use the web dashboard. Admin and staff accounts are never created here:
-  // admins come from the seed, staff are created by an admin.
-  role: z.enum(["customer", "driver", "admin", "staff"]).default("customer"),
+const device = {
   platform: z.enum(["web", "android", "ios"]),
   deviceId: z.string().max(200).optional(),
-});
+};
 
-authRouter.post("/otp/verify", async (req, res) => {
-  const body = verifySchema.parse(req.body);
-  if (!(await verifyOtp(body.phone, body.code))) {
-    throw new AppError(401, "INVALID_OTP", "Code is invalid or expired");
-  }
+const sessionHours = (role: UserRole) =>
+  role === "admin" || role === "staff" ? env.BACKOFFICE_SESSION_TTL_HOURS : env.REFRESH_TOKEN_TTL_DAYS * 24;
 
-  // Login runs in SYSTEM context: there is no user yet to scope RLS to.
+function checkNewPassword(password: string, phone: string) {
+  const problem = passwordProblem(password, phone);
+  if (problem) throw new AppError(422, "WEAK_PASSWORD", problem);
+}
+
+async function issueTokens(
+  db: PoolClient, user: { id: string; role: UserRole },
+  meta: { platform: "web" | "android" | "ios"; deviceId?: string; userAgent?: string },
+) {
+  const refreshToken = await createSession(db, user.id, { ...meta, ttlHours: sessionHours(user.role) });
+  return { accessToken: signAccessToken({ sub: user.id, role: user.role }), refreshToken };
+}
+
+// ───────────────────────── Register ─────────────────────────
+
+authRouter.post("/register", async (req, res) => {
+  const body = z
+    .object({
+      phone: phoneSchema,
+      password: z.string(),
+      fullName: z.string().trim().min(2).max(100).optional(),
+      role: z.enum(["customer", "driver"]).default("customer"),
+      ...device,
+    })
+    .parse(req.body);
+  // Per-IP limits are loose on purpose: mobile carriers put many subscribers
+  // behind one IP. Per-account lockout is the real defence for login.
+  await rateLimit(`register:ip:${req.ip}`, 60, 600);
+  checkNewPassword(body.password, body.phone);
+  const hash = await hashPassword(body.password);
+
   const result = await withContext(SYSTEM, async (db) => {
-    let { rows } = await db.query(
-      `SELECT ${USER_COLS} FROM users WHERE phone = $1 AND role = $2`,
-      [body.phone, body.role],
-    );
-    let user = rows[0];
-    let isNew = false;
-
-    if (!user) {
-      if (body.role === "admin" || body.role === "staff") {
-        throw new AppError(403, "FORBIDDEN", `No ${body.role} account for this phone`);
-      }
-      ({ rows } = await db.query(
-        `INSERT INTO users (phone, role) VALUES ($1, $2)
-         RETURNING ${USER_COLS}`,
-        [body.phone, body.role],
+    let user;
+    try {
+      ({ rows: [user] } = await db.query(
+        `INSERT INTO users (phone, role, full_name) VALUES ($1, $2, $3) RETURNING ${USER_COLS}`,
+        [body.phone, body.role, body.fullName ?? null],
       ));
-      user = rows[0]!;
-      isNew = true;
-      await db.query("INSERT INTO wallets (user_id) VALUES ($1)", [user.id]);
-      if (body.role === "driver") {
-        await db.query("INSERT INTO driver_profiles (user_id) VALUES ($1)", [user.id]);
+    } catch (err: any) {
+      if (err.code === "23505") {
+        throw new AppError(409, "ACCOUNT_EXISTS", "An account with this phone already exists. Log in instead.");
       }
+      throw err;
     }
-    if (user.status !== "active") throw new AppError(403, "ACCOUNT_SUSPENDED", "Account is not active");
-
-    const refreshToken = await createSession(db, user.id, {
-      platform: body.platform,
-      deviceId: body.deviceId,
-      userAgent: req.get("user-agent"),
+    await db.query("INSERT INTO user_credentials (user_id, password_hash) VALUES ($1, $2)", [user.id, hash]);
+    await db.query("INSERT INTO wallets (user_id) VALUES ($1)", [user.id]);
+    if (body.role === "driver") await db.query("INSERT INTO driver_profiles (user_id) VALUES ($1)", [user.id]);
+    const tokens = await issueTokens(db, user, {
+      platform: body.platform, deviceId: body.deviceId, userAgent: req.get("user-agent"),
     });
-    return { user, isNew, refreshToken };
+    return { ...tokens, user };
+  });
+  res.status(201).json(result);
+});
+
+// ───────────────────────── Login ─────────────────────────
+
+type LoginOutcome =
+  | { kind: "ok"; accessToken: string; refreshToken: string; user: any }
+  | { kind: "bad" }
+  | { kind: "locked"; until: Date }
+  | { kind: "suspended" }
+  | { kind: "change_required" };
+
+authRouter.post("/login", async (req, res) => {
+  const body = z
+    .object({
+      phone: phoneSchema,
+      password: z.string().min(1).max(128),
+      role: z.enum(["customer", "driver", "admin", "staff"]).default("customer"),
+      // Required when the account holds a temporary password.
+      newPassword: z.string().optional(),
+      ...device,
+    })
+    .parse(req.body);
+  await rateLimit(`login:ip:${req.ip}`, 120, 600);
+  if (body.newPassword !== undefined) checkNewPassword(body.newPassword, body.phone);
+
+  // Returns instead of throwing so the failed-attempt counter is committed.
+  const outcome = await withContext(SYSTEM, async (db): Promise<LoginOutcome> => {
+    const { rows: [user] } = await db.query(
+      `SELECT ${USER_COLS} FROM users WHERE phone = $1 AND role = $2`, [body.phone, body.role],
+    );
+    const { rows: [cred] } = user
+      ? await db.query("SELECT * FROM user_credentials WHERE user_id = $1 FOR UPDATE", [user.id])
+      : { rows: [] };
+
+    if (!user || !cred) {
+      await verifyPassword(body.password, await dummyHash()); // same timing as a real check
+      return { kind: "bad" };
+    }
+    if (cred.locked_until && cred.locked_until > new Date()) return { kind: "locked", until: cred.locked_until };
+
+    if (!(await verifyPassword(body.password, cred.password_hash))) {
+      const failed = cred.failed_attempts + 1;
+      await db.query(
+        `UPDATE user_credentials
+            SET failed_attempts = CASE WHEN $2::int >= $3::int THEN 0 ELSE $2::int END,
+                locked_until = CASE WHEN $2::int >= $3::int THEN now() + make_interval(mins => $4::int) END
+          WHERE user_id = $1`,
+        [user.id, failed, MAX_FAILED, LOCK_MINUTES],
+      );
+      return { kind: "bad" };
+    }
+    await db.query(
+      "UPDATE user_credentials SET failed_attempts = 0, locked_until = NULL WHERE user_id = $1", [user.id],
+    );
+    if (user.status !== "active") return { kind: "suspended" };
+
+    if (cred.must_change_password) {
+      if (body.newPassword === undefined) return { kind: "change_required" };
+      if (await verifyPassword(body.newPassword, cred.password_hash)) {
+        throw new AppError(422, "WEAK_PASSWORD", "Choose a password different from the temporary one");
+      }
+      await db.query(
+        `UPDATE user_credentials SET password_hash = $2, must_change_password = false, password_changed_at = now()
+          WHERE user_id = $1`,
+        [user.id, await hashPassword(body.newPassword)],
+      );
+    }
+    const tokens = await issueTokens(db, user, {
+      platform: body.platform, deviceId: body.deviceId, userAgent: req.get("user-agent"),
+    });
+    return { kind: "ok", ...tokens, user };
   });
 
-  res.json({
-    accessToken: signAccessToken({ sub: result.user.id, role: result.user.role }),
-    refreshToken: result.refreshToken,
-    isNewUser: result.isNew,
-    user: result.user,
-  });
+  switch (outcome.kind) {
+    case "ok": {
+      const { kind: _, ...payload } = outcome;
+      res.json(payload);
+      return;
+    }
+    case "bad":
+      throw new AppError(401, "INVALID_CREDENTIALS", "Wrong phone number or password");
+    case "locked":
+      throw new AppError(423, "ACCOUNT_LOCKED", "Too many wrong passwords. Try again later.",
+        { lockedUntil: outcome.until });
+    case "suspended":
+      throw new AppError(403, "ACCOUNT_SUSPENDED", "Account is not active");
+    case "change_required":
+      throw new AppError(409, "PASSWORD_CHANGE_REQUIRED",
+        "You're using a temporary password. Choose a new one to continue.");
+  }
 });
+
+// ───────────────────────── Change password ─────────────────────────
+
+/** Changes the password and signs out every other device. Returns a fresh session. */
+authRouter.post("/password/change", requireAuth, async (req, res) => {
+  const body = z
+    .object({ currentPassword: z.string().min(1), newPassword: z.string(), ...device })
+    .parse(req.body);
+  const result = await withContext(SYSTEM, async (db) => {
+    const { rows: [user] } = await db.query(`SELECT ${USER_COLS} FROM users WHERE id = $1`, [req.ctx.userId]);
+    const { rows: [cred] } = await db.query(
+      "SELECT password_hash FROM user_credentials WHERE user_id = $1 FOR UPDATE", [req.ctx.userId],
+    );
+    if (!user || !cred || !(await verifyPassword(body.currentPassword, cred.password_hash))) {
+      throw new AppError(401, "INVALID_CREDENTIALS", "Current password is wrong");
+    }
+    checkNewPassword(body.newPassword, user.phone);
+    await db.query(
+      `UPDATE user_credentials SET password_hash = $2, must_change_password = false, password_changed_at = now()
+        WHERE user_id = $1`,
+      [user.id, await hashPassword(body.newPassword)],
+    );
+    await db.query("UPDATE auth_sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL", [user.id]);
+    return issueTokens(db, user, { platform: body.platform, deviceId: body.deviceId, userAgent: req.get("user-agent") });
+  });
+  res.json(result);
+});
+
+// ───────────────────────── Sessions ─────────────────────────
 
 authRouter.post("/refresh", async (req, res) => {
   const { refreshToken } = z.object({ refreshToken: z.string().min(10) }).parse(req.body);

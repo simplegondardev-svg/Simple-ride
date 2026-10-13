@@ -16,6 +16,8 @@ const schema = z.object({
   JWT_ACCESS_SECRET: z.string().min(32),
   ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().default(900),
   REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().positive().default(30),
+  // Admin/staff sessions are absolute: re-enter the password after this.
+  BACKOFFICE_SESSION_TTL_HOURS: z.coerce.number().int().positive().default(12),
 
   OTP_TTL_SECONDS: z.coerce.number().int().positive().default(300),
   OTP_DEV_ECHO: bool.default(false),

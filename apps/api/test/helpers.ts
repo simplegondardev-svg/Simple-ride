@@ -30,3 +30,22 @@ export async function grant(staffId: string, permissions: string[]) {
     }
   });
 }
+
+export const PASSWORD = "Addis-Ride-2026!";
+
+/** Admin or staff account with a known, already-changed password. */
+export async function makeBackoffice(role: "admin" | "staff", phone = randomPhone()) {
+  const { hashPassword } = await import("../src/auth/password.js");
+  const hash = await hashPassword(PASSWORD);
+  const id = await withContext(SYSTEM, async (db) => {
+    const { rows: [u] } = await db.query(
+      "INSERT INTO users (phone, role) VALUES ($1, $2) RETURNING id", [phone, role],
+    );
+    await db.query(
+      "INSERT INTO user_credentials (user_id, password_hash, must_change_password) VALUES ($1, $2, false)",
+      [u.id, hash],
+    );
+    return u.id as string;
+  });
+  return { id, phone };
+}

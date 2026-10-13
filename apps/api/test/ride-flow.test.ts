@@ -2,42 +2,39 @@ import { randomUUID } from "node:crypto";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
-import { SYSTEM, withContext } from "../src/db/context.js";
 import { pool } from "../src/db/pool.js";
 import { redis } from "../src/lib/redis.js";
-import { BOLE, PIASSA, randomPhone } from "./helpers.js";
+import { BOLE, makeBackoffice, PASSWORD, PIASSA, randomPhone } from "./helpers.js";
 
 const app = createApp();
 
-async function login(phone: string, role: "customer" | "driver" | "admin") {
-  const otp = await request(app).post("/api/v1/auth/otp/request").send({ phone }).expect(202);
-  const res = await request(app)
-    .post("/api/v1/auth/otp/verify")
-    .send({ phone, code: otp.body.devCode, role, platform: "android" })
-    .expect(200);
-  return res.body as { accessToken: string; refreshToken: string; user: { id: string } };
+type Session = { accessToken: string; refreshToken: string; user: { id: string } };
+
+async function register(phone: string, role: "customer" | "driver"): Promise<Session> {
+  const res = await request(app).post("/api/v1/auth/register")
+    .send({ phone, password: PASSWORD, role, platform: "android" }).expect(201);
+  return res.body;
+}
+
+async function login(phone: string, role: "customer" | "driver" | "admin"): Promise<Session> {
+  const res = await request(app).post("/api/v1/auth/login")
+    .send({ phone, password: PASSWORD, role, platform: "android" }).expect(200);
+  return res.body;
 }
 
 const bearer = (token: string) => ({ Authorization: `Bearer ${token}` });
 
-let customer: Awaited<ReturnType<typeof login>>;
-let driver: Awaited<ReturnType<typeof login>>;
-let admin: Awaited<ReturnType<typeof login>>;
+let customer: Session;
+let driver: Session;
+let admin: Session;
 
 beforeAll(async () => {
   await redis.flushdb();
-  // Seeded admin phone may be in use by a parallel dev DB; create a fresh one.
-  const adminPhone = randomPhone();
-  await withContext(SYSTEM, async (db) => {
-    const { rows: [u] } = await db.query(
-      "INSERT INTO users (phone, role) VALUES ($1, 'admin') RETURNING id", [adminPhone],
-    );
-    await db.query("INSERT INTO wallets (user_id) VALUES ($1)", [u.id]);
-  });
+  const { phone: adminPhone } = await makeBackoffice("admin");
   // Local Ethiopian formats are accepted and normalised.
   const local = `0${randomPhone().slice(4)}`;
   [customer, driver, admin] = await Promise.all([
-    login(local, "customer"), login(randomPhone(), "driver"), login(adminPhone, "admin"),
+    register(local, "customer"), register(randomPhone(), "driver"), login(adminPhone, "admin"),
   ]);
 });
 
@@ -47,25 +44,6 @@ afterAll(async () => {
 });
 
 describe("auth", () => {
-  it("rejects a wrong OTP", async () => {
-    const phone = randomPhone();
-    await request(app).post("/api/v1/auth/otp/request").send({ phone }).expect(202);
-    const res = await request(app)
-      .post("/api/v1/auth/otp/verify")
-      .send({ phone, code: "000000", platform: "ios" });
-    // 1-in-a-million chance the random code is 000000
-    expect([401, 200]).toContain(res.status);
-  });
-
-  it("never creates admin accounts through OTP", async () => {
-    const phone = randomPhone();
-    const otp = await request(app).post("/api/v1/auth/otp/request").send({ phone });
-    await request(app)
-      .post("/api/v1/auth/otp/verify")
-      .send({ phone, code: otp.body.devCode, role: "admin", platform: "web" })
-      .expect(403);
-  });
-
   it("rotates refresh tokens and detects reuse", async () => {
     const first = await request(app).post("/api/v1/auth/refresh")
       .send({ refreshToken: customer.refreshToken }).expect(200);
@@ -190,7 +168,7 @@ describe("full ride", () => {
     expect(dup.body.error.code).toBe("ALREADY_EXISTS");
     await request(app).post(`/api/v1/trips/${tripId}/rate`).set(bearer(driver.accessToken))
       .send({ score: 4 }).expect(201);
-    const stranger = await login(randomPhone(), "customer");
+    const stranger = await register(randomPhone(), "customer");
     await request(app).post(`/api/v1/trips/${tripId}/rate`).set(bearer(stranger.accessToken))
       .send({ score: 1 }).expect(404);
   });

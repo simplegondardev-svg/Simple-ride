@@ -4,7 +4,7 @@ import { AppError } from "../lib/errors.js";
 
 /**
  * Every staff permission. Must match the `permissions` table (seeded in
- * 0005_staff_permissions.sql); test/staff.test.ts fails if they drift.
+ * 0005_staff_permissions.sql and later migrations); test/staff.test.ts fails if they drift.
  * Adding one = add it here + INSERT it in a new migration + use it in
  * requirePermission() and, if it gates data, in an RLS policy.
  */
@@ -12,6 +12,7 @@ export const PERMISSIONS = [
   "dashboard.view",
   "users.view",
   "users.suspend",
+  "users.reset_password",
   "drivers.view",
   "drivers.approve",
   "trips.view",

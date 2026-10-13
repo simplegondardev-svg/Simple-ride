@@ -23,6 +23,7 @@ const NAV: { href: string; label: string; show: (me: Me) => boolean }[] = [
   { href: "/admin/daybook", label: "Day book",
     show: (me) => me.role === "admin" || me.permissions.includes("finance.daybook.view") },
   { href: "/admin/staff", label: "Staff", show: (me) => me.role === "admin" },
+  { href: "/admin/account", label: "My password", show: () => true },
 ];
 
 export function AdminShell({ children }: { children: React.ReactNode }) {

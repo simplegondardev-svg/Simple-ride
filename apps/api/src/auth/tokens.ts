@@ -38,15 +38,15 @@ const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
 export async function createSession(
   db: PoolClient,
   userId: string,
-  meta: { platform: Platform; deviceId?: string; userAgent?: string },
+  meta: { platform: Platform; deviceId?: string; userAgent?: string; ttlHours?: number },
 ): Promise<string> {
   const secret = randomBytes(32).toString("base64url");
   const { rows } = await db.query<{ id: string }>(
     `INSERT INTO auth_sessions (user_id, refresh_token_hash, platform, device_id, user_agent, expires_at)
-     VALUES ($1, $2, $3, $4, $5, now() + make_interval(days => $6))
+     VALUES ($1, $2, $3, $4, $5, now() + make_interval(hours => $6))
      RETURNING id`,
     [userId, sha256(secret), meta.platform, meta.deviceId ?? null, meta.userAgent ?? null,
-     env.REFRESH_TOKEN_TTL_DAYS],
+     meta.ttlHours ?? env.REFRESH_TOKEN_TTL_DAYS * 24],
   );
   return `${rows[0]!.id}.${secret}`;
 }

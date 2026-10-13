@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "db:migrate": "tsx --env-file-if-exists=.env src/db/migrate.ts",
     "db:seed": "tsx --env-file-if-exists=.env src/db/seed.ts",
-    "test": "vitest run"
+    "test": "vitest run",
+    "reset-password": "tsx --env-file-if-exists=.env src/db/reset-password.ts"
   },
   "dependencies": {
     "cors": "^2.8.6",

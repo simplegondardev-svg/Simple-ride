@@ -53,7 +53,7 @@ but not independently confirmed, **[Guessing]** assumption that needs validation
 | Mobile money is growing (telebirr, CBE Birr, M-Pesa) | `payments` table is provider-agnostic. telebirr first, aggregator (e.g. Chapa) second. |
 | No formal street addresses | Landmark search (Gebeta geocoding), pin drop, **saved places**, and a call-driver button. Addresses are free-text labels next to coordinates. |
 | Unreliable mobile data | **Idempotency keys** on trip requests (done), small payloads, SMS fallback for critical events, clients re-sync with `GET /trips/:id` on reconnect. |
-| Phone-first identity | **Phone + OTP** login, no passwords (done). Ethiopian number normalisation for 09/07 prefixes (done). |
+| Phone-first identity | Phone + **password** login for now (done); phone numbers are not yet verified. Add SMS verification once an SMS provider is chosen. Ethiopian number normalisation for 09/07 prefixes (done). |
 | Feature-phone users | Phase 2 **dispatcher console**: ops staff book on a caller's behalf (the RIDE 8294 model). |
 | Languages | `users.locale` supports `am`, `en`, `om`, `ti` (done). Apps ship Amharic and English first. |
 | Ethiopian calendar and time | Apps format dates in the Ethiopian calendar and local 12-hour clock when the user chooses. The API always uses UTC ISO-8601. |
@@ -68,7 +68,8 @@ but not independently confirmed, **[Guessing]** assumption that needs validation
 - **Roles: customer, driver, admin**, plus an internal `system` context for trusted server code.
 - **Row-level security on every table**, with column-guard triggers for privileged fields. Tested at
   SQL level by connecting as the runtime role.
-- Phone OTP auth, short-lived JWT access tokens, rotating refresh tokens with reuse detection, per-device sessions.
+- Phone + password auth (scrypt, lockout, temporary passwords for resets), short-lived JWT access tokens,
+  rotating refresh tokens with reuse detection, per-device sessions.
 - Driver onboarding (profile, vehicle) → admin approval → go online/offline.
 - Live driver positions in a Redis GEO index; PostGIS persistence throttled to every 30 s.
 - Fare estimate (distance, time, minimum fare, zone multiplier, booking fee), operating and restricted zones in PostGIS.
@@ -77,7 +78,7 @@ but not independently confirmed, **[Guessing]** assumption that needs validation
 - Money: wallets plus an immutable ledger. Cash-trip commission is debited from the driver; wallet trips are settled.
 - Realtime over Socket.IO: offers to drivers, trip updates, driver location streamed to the rider.
 - Gebeta client (routing, geocoding, reverse geocoding) with Redis caching and a straight-line fallback.
-- Web: OTP login, rider booking on a map, admin dashboard (stats, driver approvals, trips). Tokens stay in httpOnly cookies.
+- Web: password login and rider sign-up, rider booking on a map, admin dashboard (stats, driver approvals, trips). Tokens stay in httpOnly cookies.
 
 ---
 
@@ -88,7 +89,8 @@ but not independently confirmed, **[Guessing]** assumption that needs validation
 ### Rider (Flutter app; web booking as a secondary channel)
 | Feature | Phase |
 |---|---|
-| Phone OTP login, profile, language | ✅ |
+| Phone + password login, profile, language | ✅ |
+| Verify phone number by SMS; self-service "forgot password" | P1 |
 | Pick pickup/drop-off by landmark search, pin, saved places, recent places | P1 |
 | See nearby cars on the map before booking | P1 |
 | Upfront fare per category; pay with cash or wallet | ✅ |
@@ -171,6 +173,8 @@ new cities and verticals, data warehouse.
 ## 5. Flutter readiness (decisions already baked into the API)
 
 - **Versioned REST** at `/api/v1`. Shipped app builds can't be force-updated, so breaking changes go to `/api/v2`.
+- **Auth**: `POST /auth/register` and `POST /auth/login` with phone + password. Handle `409
+  PASSWORD_CHANGE_REQUIRED` by asking for a new password and repeating the login with `newPassword`.
 - **Bearer tokens**, not cookies, for mobile. Store the refresh token in `flutter_secure_storage`. Send `platform`
   (`android`/`ios`) and a stable `deviceId` at login, so sessions are per device and can be revoked.
 - **Uniform JSON**: camelCase keys, `{ "error": { "code", "message", "details" } }` with stable `code`s
@@ -196,7 +200,7 @@ new cities and verticals, data warehouse.
 3. **Surge pricing**: RIDE markets itself as having no surge pricing. Do we use dynamic pricing at all?
 4. **Licensing**: Transport Bureau recognition, trade licence, and VAT and e-invoicing obligations.
 5. **Payments contracts**: telebirr merchant onboarding (H5 web checkout and in-app SDK), CBE Birr, an aggregator?
-6. **SMS provider** and expected OTP volume and cost.
+6. **SMS provider** for phone verification and password resets, and expected volume and cost.
 7. **Gebeta plan**: request quotas and pricing for directions, matrix and geocoding at our expected volume.
 8. **Driver multi-homing**: Feres won drivers by allowing it. We should too, and compete on what drivers keep.
 

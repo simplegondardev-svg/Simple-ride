@@ -1,4 +1,5 @@
 import pg from "pg";
+import { hashPassword, temporaryPassword } from "../auth/password.js";
 
 /**
  * Development seed (idempotent): vehicle categories with illustrative Addis
@@ -43,8 +44,16 @@ async function seed() {
       [phone],
     );
     await client.query("INSERT INTO wallets (user_id) VALUES ($1) ON CONFLICT DO NOTHING", [rows[0].id]);
+    // First run only: a temporary password, printed once, changed at first login.
+    const temp = temporaryPassword();
+    const { rowCount } = await client.query(
+      `INSERT INTO user_credentials (user_id, password_hash, must_change_password)
+       VALUES ($1, $2, true) ON CONFLICT (user_id) DO NOTHING`,
+      [rows[0].id, await hashPassword(temp)],
+    );
     await client.query("COMMIT");
     console.log(`seeded categories, Addis zone, admin ${phone}`);
+    if (rowCount) console.log(`admin temporary password: ${temp}  (you'll choose your own at first login)`);
   } catch (err) {
     await client.query("ROLLBACK");
     throw err;
