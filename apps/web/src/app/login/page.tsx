@@ -8,7 +8,7 @@ function LoginForm() {
   const next = useSearchParams().get("next") ?? "/ride";
   const [phone, setPhone] = useState("");
   const [code, setCode] = useState("");
-  const [role, setRole] = useState<"customer" | "admin">(next.startsWith("/admin") ? "admin" : "customer");
+  const [role, setRole] = useState<"customer" | "admin" | "staff">(next.startsWith("/admin") ? "admin" : "customer");
   const [step, setStep] = useState<"phone" | "code">("phone");
   const [devCode, setDevCode] = useState<string>();
   const [error, setError] = useState<string>();
@@ -37,7 +37,7 @@ function LoginForm() {
         setStep("code");
       } else {
         await call("/api/auth/verify", { phone, code, role });
-        router.push(role === "admin" ? "/admin" : next);
+        router.push(role === "customer" ? next : "/admin");
       }
     } catch (err) {
       setError((err as Error).message);
@@ -56,6 +56,7 @@ function LoginForm() {
             <label htmlFor="role">Log in as</label>
             <select id="role" value={role} onChange={(e) => setRole(e.target.value as typeof role)}>
               <option value="customer">Rider</option>
+              <option value="staff">Staff</option>
               <option value="admin">Admin</option>
             </select>
           </>

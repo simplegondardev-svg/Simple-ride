@@ -49,3 +49,12 @@ th { color: var(--muted); font-weight: 500; }
 .option { display: flex; justify-content: space-between; padding: 10px; border: 1px solid var(--border);
   border-radius: 8px; margin-top: 8px; cursor: pointer; background: transparent; color: inherit; width: 100%; font-weight: 400; }
 .option[aria-pressed="true"] { border-color: var(--brand); outline: 2px solid var(--brand); }
+header.top nav a { text-decoration: none; color: var(--muted); }
+header.top nav a[aria-current="page"] { color: var(--text); font-weight: 600; }
+.perm-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); margin: 12px 0; }
+fieldset { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; margin: 0; }
+legend { font-weight: 600; font-size: 13px; padding: 0 4px; }
+label.toggle { display: flex; gap: 8px; align-items: flex-start; color: var(--text); font-size: 14px; margin: 6px 0; cursor: pointer; }
+label.toggle input { width: auto; margin-top: 3px; }
+.split-even { display: grid; gap: 12px; grid-template-columns: 1fr; }
+@media (min-width: 640px) { .split-even { grid-template-columns: 1fr 1fr; } }

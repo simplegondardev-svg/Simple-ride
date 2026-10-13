@@ -46,6 +46,36 @@
    should not expose data. If an SQL-injection bug let an attacker call `set_config`, RLS would no longer protect
    anything, so all SQL stays parameterised.
 
+## Staff permissions
+
+- `admin`: full access, and the only role that creates staff and changes their permissions. There is no "manage
+  staff" permission, so a staff member can never escalate their own access.
+- `staff`: exactly the permissions in `staff_permissions` for that person. The catalog lives in the
+  `permissions` table and in `PERMISSIONS` (`src/auth/permissions.ts`); a test fails if the two differ.
+- **Enforced twice.** Routes declare `requirePermission("trips.view")`, and RLS policies check `app.can('trips.view')`.
+  `app.init_context()` loads the person's permissions into the transaction once, so the per-row check is cheap.
+- **Changes apply on the next request**, because permissions are read per transaction, not stored in the token.
+- **Every request re-checks the account.** A suspended or deleted user, or a token whose role no longer
+  matches, gets `401 ACCOUNT_INACTIVE` at once instead of when the access token expires.
+- Staff never see admin or other staff accounts. They act on riders and drivers only.
+- Dashboard totals and the day book are `SECURITY DEFINER` functions that check the permission themselves,
+  because totals must count every row, not only the ones the viewer may read row by row.
+
+| Permission | Allows |
+|---|---|
+| `dashboard.view` | Dashboard statistics |
+| `users.view` / `users.suspend` | View riders and drivers / suspend or reactivate them |
+| `drivers.view` / `drivers.approve` | View driver profiles and vehicles / approve, reject, suspend |
+| `trips.view` / `trips.cancel` | View trips, timelines, ratings / cancel active trips |
+| `finance.daybook.view` | The day book: one Addis Ababa day of trips and wallet movements |
+| `finance.wallets.view` / `finance.wallets.adjust` | Wallet balances and history / manual credit or debit (with reason) |
+| `pricing.manage` / `zones.manage` | Fares and commission / service zones (database rules ready; screens not built yet) |
+| `sos.view` / `sos.manage` | SOS alerts / acknowledge and resolve (database rules ready; screens not built yet) |
+| `audit.view` | The audit log of every back-office action |
+
+Adding a permission: add it to `PERMISSIONS`, `INSERT` it in a new migration, gate the route with
+`requirePermission`, and add an RLS policy if it controls data.
+
 ## Matching (v1)
 
 1. Online drivers live in `drivers:geo:<category>` (Redis GEO). Pings older than 60 s are ignored.
@@ -81,7 +111,9 @@ v2 (see PLAN.md) ranks candidates by **road ETA** using Gebeta's one-to-many end
 | POST | `/trips/:id/cancel` · `/trips/:id/rate` | parties |
 | POST | `/trips/:id/accept` · `decline` · `arrive` · `start` · `complete` | driver |
 | GET/PUT/POST | `/drivers/me` · `/drivers/me/profile` · `/drivers/me/vehicles` · `/drivers/me/online` · `/drivers/me/offline` · `/drivers/me/location` · `/drivers/me/offers` | driver |
-| GET/PATCH/POST | `/admin/stats` · `/admin/users` · `/admin/users/:id/status` · `/admin/drivers/pending` · `/admin/drivers/:id/review` · `/admin/trips` | admin |
+| GET | `/admin/me` · `/admin/permissions` | admin, staff |
+| GET/PATCH/POST | `/admin/stats` · `/admin/users` · `/admin/users/:id/status` · `/admin/drivers/pending` · `/admin/drivers/:id/review` · `/admin/trips` · `/admin/trips/:id/cancel` · `/admin/finance/daybook?date=` · `/admin/wallets/:id` · `/admin/wallets/:id/adjust` · `/admin/audit` | admin, or staff with the matching permission |
+| GET/POST/PUT | `/admin/staff` · `/admin/staff/:id/permissions` | admin only |
 
 ### Socket.IO events
 | Direction | Event | Payload |

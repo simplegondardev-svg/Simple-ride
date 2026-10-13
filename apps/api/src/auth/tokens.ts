@@ -3,7 +3,7 @@ import jwt from "jsonwebtoken";
 import type { PoolClient } from "pg";
 import { env } from "../config/env.js";
 
-export type UserRole = "customer" | "driver" | "admin";
+export type UserRole = "customer" | "driver" | "admin" | "staff";
 export type Platform = "web" | "android" | "ios";
 
 export interface AccessClaims {

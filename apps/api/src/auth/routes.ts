@@ -31,9 +31,10 @@ authRouter.post("/otp/request", async (req, res) => {
 const verifySchema = z.object({
   phone: phoneSchema,
   code: z.string().regex(/^\d{6}$/),
-  // Which app is logging in. The driver app sends "driver"; admins use the
-  // web dashboard. Admin accounts are never created through this endpoint.
-  role: z.enum(["customer", "driver", "admin"]).default("customer"),
+  // Which app is logging in. The driver app sends "driver"; admins and staff
+  // use the web dashboard. Admin and staff accounts are never created here:
+  // admins come from the seed, staff are created by an admin.
+  role: z.enum(["customer", "driver", "admin", "staff"]).default("customer"),
   platform: z.enum(["web", "android", "ios"]),
   deviceId: z.string().max(200).optional(),
 });
@@ -54,7 +55,9 @@ authRouter.post("/otp/verify", async (req, res) => {
     let isNew = false;
 
     if (!user) {
-      if (body.role === "admin") throw new AppError(403, "FORBIDDEN", "No admin account for this phone");
+      if (body.role === "admin" || body.role === "staff") {
+        throw new AppError(403, "FORBIDDEN", `No ${body.role} account for this phone`);
+      }
       ({ rows } = await db.query(
         `INSERT INTO users (phone, role) VALUES ($1, $2)
          RETURNING ${USER_COLS}`,

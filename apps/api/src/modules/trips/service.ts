@@ -320,6 +320,7 @@ export async function completeTrip(driverId: string, tripId: string) {
       "SELECT commission_bps FROM vehicle_categories WHERE code = $1", [trip.categoryCode],
     );
     const commission = Math.round((trip.finalFare * cat.commission_bps) / 10_000);
+    await db.query("UPDATE trips SET commission_amount = $2 WHERE id = $1", [tripId, commission]);
 
     if (trip.paymentMethod === "cash") {
       if (commission > 0) await postLedger(db, driverId, -commission, "commission", tripId);
@@ -345,13 +346,14 @@ export async function completeTrip(driverId: string, tripId: string) {
 }
 
 export async function cancelTrip(ctx: DbContext, tripId: string, reason?: string) {
-  const actor = ctx.role === "admin" ? "admin" : ctx.role;
+  // Staff act on behalf of the company, recorded as 'admin' in trip_actor.
+  const actor = ctx.role === "admin" || ctx.role === "staff" ? "admin" : ctx.role;
   const t = TRANSITIONS.cancel;
   const trip = await withContext(ctx, async (db) => {
     const { rows } = await db.query(
       `UPDATE trips AS t SET status = 'cancelled', cancelled_at = now(), cancelled_by = $2, cancel_reason = $3
         WHERE id = $1 AND status = ANY($4)
-          AND (customer_id = app.uid() OR driver_id = app.uid() OR app.is_staff())
+          AND (customer_id = app.uid() OR driver_id = app.uid() OR app.can('trips.cancel'))
         RETURNING ${TRIP_COLUMNS}`,
       [tripId, actor, reason ?? null, t.from],
     );

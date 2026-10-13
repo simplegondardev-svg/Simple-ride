@@ -41,6 +41,11 @@ export const errorHandler: ErrorRequestHandler = (err, req, res, _next) => {
     });
     return;
   }
+  // app.init_context(): the account was suspended/deleted after the token was issued.
+  if (err?.code === "28000") {
+    res.status(401).json({ error: { code: "ACCOUNT_INACTIVE", message: "Account is not active" } });
+    return;
+  }
   // Postgres insufficient_privilege: an RLS policy or column guard said no.
   if (err?.code === "42501") {
     res.status(403).json({ error: { code: "FORBIDDEN", message: "Not allowed" } });
