@@ -47,7 +47,7 @@ These have lead times that development can't shorten. Each one blocks a specific
 
 - [ ] Record the business decisions (fares per category, commission, cancellation rules) in the seed and in `docs/PLAN.md`.
 - [ ] Generate an **OpenAPI spec** from the existing Zod schemas, served at `/api/v1/openapi.json`. Generate a Dart client from it.
-- [ ] Confirm CI passes on GitHub (it has never been seen running there).
+- [x] Confirm CI passes on GitHub — green on `main` since run #2 (Oct 2026).
 - [ ] Rotate the Gebeta key; separate keys for the API (server) and tiles (domain-restricted).
 - [ ] Error codes catalogue in the docs (every `error.code` the apps must handle).
 
