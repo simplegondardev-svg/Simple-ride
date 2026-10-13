@@ -98,17 +98,28 @@ Every role logs in with **phone number + password** (`POST /auth/login`). Riders
 Adding a permission: add it to `PERMISSIONS`, `INSERT` it in a new migration, gate the route with
 `requirePermission`, and add an RLS policy if it controls data.
 
-## Matching (v1)
+## Matching (dispatch v2)
 
-1. Online drivers live in `drivers:geo:<category>` (Redis GEO). Pings older than 60 s are ignored.
-2. A new trip is offered to the 5 nearest drivers by straight-line distance, each with a 20 s window.
-3. The first `accept` wins through `UPDATE trips … WHERE status = 'searching'`. The others get `TRIP_ALREADY_TAKEN`.
-4. A 5 s sweep expires lapsed offers, re-dispatches to drivers not yet offered, and expires trips after 3 minutes.
+1. Online drivers live in `drivers:geo:<category>` (Redis GEO). Drivers silent for 60 s are taken offline by the sweeper.
+2. For a searching trip: the 9 nearest available drivers who haven't declined or ignored it, by straight-line
+   distance from Redis (fast, free).
+3. Ranked by **driving time to the pickup** with one Gebeta matrix call (driver → pickup; direction matters on
+   one-way and divided roads). If Gebeta fails, straight-line order with a road-factor estimate.
+4. The best **2** get an offer for 20 s (`trip_offers.eta_s` records the ETA). A decline starts the next round
+   immediately; otherwise the sweeper does when the window lapses.
+5. First `accept` wins (`UPDATE … WHERE status = 'searching'`). The other offers become `withdrawn`: those drivers
+   can be offered the trip again and it doesn't count against their acceptance rate.
+6. A driver backing out after accepting puts the trip back to `searching` with a fresh 3-minute window; that
+   driver isn't offered it again.
+7. The sweeper (every 5 s, one instance at a time via a Redis lock) expires trips searching for 3 minutes,
+   expires lapsed offers, starts next rounds, takes silent drivers offline and repairs stale "on trip" states.
 
-v2 (see PLAN.md) ranks candidates by **road ETA** using Gebeta's one-to-many endpoint and offers sequentially.
+Fares at completion: quote + extra minutes beyond the estimate at the per-minute rate, capped at
+`overtime_cap_bps` (default 25%) of the quote; commission is charged on the final fare.
+
+Check dispatch end-to-end with `pnpm --filter @simple-ride/api simulate` against a running API.
 
 ## Scaling notes
-- The sweeper runs in the API process. With more than one API instance, move it to a worker or guard it with a Redis lock.
 - With more than one API instance, add `@socket.io/redis-adapter` so `emitToUser` reaches sockets on other nodes.
 - Driver pings never touch Postgres on the hot path. The 30 s throttle keeps write load at about 2 writes/min per online driver.
 
@@ -135,7 +146,7 @@ v2 (see PLAN.md) ranks candidates by **road ETA** using Gebeta's one-to-many end
 | POST | `/trips/:id/accept` · `decline` · `arrive` · `start` · `complete` | driver |
 | GET/PUT/POST | `/drivers/me` · `/drivers/me/profile` · `/drivers/me/vehicles` · `/drivers/me/online` · `/drivers/me/offline` · `/drivers/me/location` · `/drivers/me/offers` | driver |
 | GET | `/admin/me` · `/admin/permissions` | admin, staff |
-| GET/PATCH/POST | `/admin/stats` · `/admin/users` · `/admin/users/:id/status` · `/admin/drivers/pending` · `/admin/drivers/:id/review` · `/admin/trips` · `/admin/trips/:id/cancel` · `/admin/finance/daybook?date=` · `/admin/wallets/:id` · `/admin/wallets/:id/adjust` · `/admin/audit` | admin, or staff with the matching permission |
+| GET/PATCH/POST | `/admin/settings` (GET/PATCH, `pricing.manage`) · `/admin/stats` · `/admin/users` · `/admin/users/:id/status` · `/admin/drivers/pending` · `/admin/drivers/:id/review` · `/admin/trips` · `/admin/trips/:id/cancel` · `/admin/finance/daybook?date=` · `/admin/wallets/:id` · `/admin/wallets/:id/adjust` · `/admin/audit` | admin, or staff with the matching permission |
 | POST | `/admin/users/:id/reset-password` | admin, or staff with `users.reset_password` |
 | GET/POST/PUT | `/admin/staff` · `/admin/staff/:id/permissions` · `/admin/staff/:id/reset-password` | admin only |
 

@@ -70,16 +70,26 @@ These have lead times that development can't shorten. Each one blocks a specific
 
 **Goal:** riders get picked up fast, and stuck or abandoned trips sort themselves out.
 
-- [ ] Rank candidate drivers by **real driving time to the pickup**, using Gebeta's matrix (driver → pickup), not straight-line distance. Fall back to straight-line distance when Gebeta is down.
-- [ ] Offer to one or two drivers at a time with a short window, then the next ones. Track acceptance rate per driver.
-- [ ] Driver cancels after accepting → the trip goes back to searching instead of ending.
-- [ ] Drivers whose app stops pinging go offline automatically; stale "on trip" states are recovered.
-- [ ] Overtime at completion: quote + (actual minutes − estimated minutes) × the category's per-minute rate,
+- [x] Rank candidate drivers by **real driving time to the pickup**, using Gebeta's matrix (driver → pickup), not straight-line distance. Fall back to straight-line distance when Gebeta is down.
+- [x] Offer to one or two drivers at a time with a short window, then the next ones. Track acceptance rate per driver.
+- [x] Driver cancels after accepting → the trip goes back to searching instead of ending.
+- [x] Drivers whose app stops pinging go offline automatically; stale "on trip" states are recovered.
+- [x] Overtime at completion: quote + (actual minutes − estimated minutes) × the category's per-minute rate,
       capped at **+25%** of the quote (admin-adjustable). Never below the quote. Shown to rider and driver.
-- [ ] The trip sweeper takes a Redis lock, so several API instances don't double-dispatch.
-- [ ] Simulation script: 50 fake drivers moving around Addis and 200 trip requests, reporting acceptance rate and pickup times.
+- [x] The trip sweeper takes a Redis lock, so several API instances don't double-dispatch.
+- [x] Simulation script (`pnpm --filter @simple-ride/api simulate`): 50 fake drivers moving around Addis and 200 trip requests, reporting acceptance rate and pickup times.
 
 **Exit:** the simulation completes with no stuck trips. Median time to accept is under 30 s. Results are logged in the PR.
+
+✅ **CP2 done (Oct 2026).** Simulation results:
+
+| Run | Trips | Stuck | Median accept | p90 accept | Median driver ETA |
+|---|---|---|---|---|---|
+| 50 drivers, 200 trips, straight-line fallback | 200 completed | 0 | 4.2 s | 25.9 s | 4.1 min |
+| 10 drivers, 30 trips, live Gebeta ranking | 28 completed, 2 expired (more requests than drivers) | 0 | 6.2 s | 35.0 s | 12.0 min |
+
+Offering to 2 drivers at once means the slower one sometimes gets "already taken" (86 of 200 trips). That's
+the trade-off for short waits; revisit if drivers complain.
 
 ## CP3 — SMS verification and self-service password reset
 

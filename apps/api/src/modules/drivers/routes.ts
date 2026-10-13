@@ -4,6 +4,7 @@ import { requireRole } from "../../auth/middleware.js";
 import { withContext } from "../../db/context.js";
 import { AppError } from "../../lib/errors.js";
 import { latLng } from "../../lib/schemas.js";
+import { acceptanceRate } from "../trips/service.js";
 import { recordPing, setAvailable, setUnavailable } from "./presence.js";
 
 export const driversRouter = Router();
@@ -22,7 +23,8 @@ driversRouter.get("/me", async (req, res) => {
               color, year, status, is_current AS "isCurrent"
          FROM vehicles WHERE driver_id = app.uid() ORDER BY created_at`,
     );
-    return { ...profile, vehicles };
+    // Share of recent offers accepted (null until the driver has had offers).
+    return { ...profile, acceptanceRate: await acceptanceRate(db, req.ctx.userId!), vehicles };
   });
   res.json(data);
 });

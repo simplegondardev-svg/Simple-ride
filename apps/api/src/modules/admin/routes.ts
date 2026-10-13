@@ -241,6 +241,34 @@ adminRouter.post("/wallets/:id/adjust", requirePermission("finance.wallets.adjus
   res.json(result);
 });
 
+// ───────────────────────── Business settings ─────────────────────────
+// Admin-adjustable rules. Each key is validated here; unknown keys are refused.
+const SETTINGS = z.object({
+  /** Max extra for longer-than-estimated trips, in basis points of the quote (2500 = 25%). */
+  overtimeCapBps: z.number().int().min(0).max(10_000),
+}).partial();
+const SETTING_KEYS: Record<string, string> = { overtimeCapBps: "overtime_cap_bps" };
+
+adminRouter.get("/settings", requirePermission("pricing.manage"), async (req, res) => {
+  const rows = await withContext(req.ctx, async (db) => (await db.query("SELECT key, value FROM app_settings")).rows);
+  const byKey = Object.fromEntries(rows.map((r) => [r.key, r.value]));
+  res.json(Object.fromEntries(Object.entries(SETTING_KEYS).map(([api, db]) => [api, byKey[db] ?? null])));
+});
+
+adminRouter.patch("/settings", requirePermission("pricing.manage"), async (req, res) => {
+  const body = SETTINGS.strict().parse(req.body);
+  await withContext(req.ctx, async (db) => {
+    for (const [api, value] of Object.entries(body)) {
+      await db.query(
+        "UPDATE app_settings SET value = $2, updated_by = app.uid() WHERE key = $1",
+        [SETTING_KEYS[api], JSON.stringify(value)],
+      );
+    }
+    await audit(db, "settings.update", "settings", "app", body);
+  });
+  res.json(body);
+});
+
 // ───────────────────────── Audit ─────────────────────────
 
 adminRouter.get("/audit", requirePermission("audit.view"), async (req, res) => {

@@ -71,7 +71,10 @@ export async function recordPing(driverId: string, p: LatLng & { heading?: numbe
 
 export interface NearbyDriver {
   driverId: string;
+  /** Straight-line distance to the search point. */
   distanceM: number;
+  lat: number;
+  lng: number;
 }
 
 export async function findNearby(
@@ -79,8 +82,8 @@ export async function findNearby(
 ): Promise<NearbyDriver[]> {
   const raw = (await redis.geosearch(
     `drivers:geo:${category}`, "FROMLONLAT", p.lng, p.lat,
-    "BYRADIUS", radiusM, "m", "ASC", "COUNT", limit * 2, "WITHDIST",
-  )) as [string, string][];
+    "BYRADIUS", radiusM, "m", "ASC", "COUNT", limit * 2, "WITHDIST", "WITHCOORD",
+  )) as [string, string, [string, string]][];
   if (raw.length === 0) return [];
 
   const seen = await redis.zmscore("drivers:seen", ...raw.map(([id]) => id));
@@ -88,7 +91,14 @@ export async function findNearby(
   return raw
     .filter((_, i) => Number(seen[i] ?? 0) > cutoff)
     .slice(0, limit)
-    .map(([driverId, dist]) => ({ driverId, distanceM: Math.round(Number(dist)) }));
+    .map(([driverId, dist, [lng, lat]]) => ({
+      driverId, distanceM: Math.round(Number(dist)), lat: Number(lat), lng: Number(lng),
+    }));
+}
+
+/** Available drivers whose last ping is older than the stale cutoff. */
+export async function staleDrivers(): Promise<string[]> {
+  return redis.zrangebyscore("drivers:seen", "-inf", Date.now() - STALE_MS);
 }
 
 export async function getPosition(driverId: string): Promise<(LatLng & { at: number }) | null> {

@@ -4,14 +4,19 @@ import { AppError, conflict, notFound } from "../../lib/errors.js";
 import { logger } from "../../lib/logger.js";
 import { redis } from "../../lib/redis.js";
 import { emitToUser } from "../../realtime/socket.js";
-import { findNearby, getPosition, setAvailable, setUnavailable } from "../drivers/presence.js";
-import { getRoute, type LatLng } from "../geo/gebeta.js";
-import { calculateFare, type FareRules } from "../pricing/fare.js";
+import { findNearby, getPosition, setAvailable, setUnavailable, staleDrivers, type NearbyDriver } from "../drivers/presence.js";
+import { drivingTimesTo, getRoute, type Leg, type LatLng } from "../geo/gebeta.js";
+import { calculateFare, overtimeCharge, type FareRules } from "../pricing/fare.js";
 import { TRANSITIONS, type TripAction } from "./state-machine.js";
 
 const OFFER_TTL_S = 20;
-const OFFER_BATCH = 5;
+/** Drivers offered at once; the next ones get it when these decline or time out. */
+const OFFER_BATCH = 2;
+/** Drivers considered per round (Gebeta matrix: 9 origins + the pickup). */
+const CANDIDATES = 9;
+const SEARCH_RADIUS_M = 5000;
 const SEARCH_TIMEOUT_S = 180;
+const SWEEP_LOCK_MS = 4000;
 
 /** Columns returned to clients. Coordinates are flattened to {lat,lng}. */
 export const TRIP_COLUMNS = `
@@ -27,7 +32,8 @@ export const TRIP_COLUMNS = `
   t.ride_pin AS "ridePin", t.scheduled_for AS "scheduledFor",
   t.requested_at AS "requestedAt", t.accepted_at AS "acceptedAt", t.arrived_at AS "arrivedAt",
   t.started_at AS "startedAt", t.completed_at AS "completedAt", t.cancelled_at AS "cancelledAt",
-  t.cancelled_by AS "cancelledBy", t.cancel_reason AS "cancelReason"`;
+  t.cancelled_by AS "cancelledBy", t.cancel_reason AS "cancelReason",
+  t.overtime_amount AS "overtimeAmount"`;
 
 const point = (p: LatLng) => `ST_SetSRID(ST_MakePoint(${p.lng}, ${p.lat}), 4326)::geography`;
 
@@ -148,50 +154,110 @@ export async function createTrip(ctx: DbContext, input: CreateTripInput) {
   return { trip, created: true };
 }
 
+export interface RankedDriver extends NearbyDriver {
+  /** Estimated driving time to the pickup, seconds. */
+  etaS: number;
+  etaSource: "gebeta" | "estimate";
+}
+
 /**
- * Offer a searching trip to the nearest available drivers who haven't been
- * offered it yet. First to accept wins (see acceptTrip).
+ * Order candidates by driving time to the pickup. Where Gebeta had no answer
+ * for a driver, estimate from straight-line distance (× 1.35 road factor at
+ * 22 km/h), the same fallback the fare estimate uses.
+ */
+export function rankByEta(candidates: NearbyDriver[], legs: (Leg | null)[] | null): RankedDriver[] {
+  return candidates
+    .map((c, i) => {
+      const leg = legs?.[i];
+      return leg
+        ? { ...c, etaS: leg.durationS, etaSource: "gebeta" as const }
+        : { ...c, etaS: Math.round((c.distanceM * 1.35) / (22 / 3.6)), etaSource: "estimate" as const };
+    })
+    .sort((a, b) => a.etaS - b.etaS || a.distanceM - b.distanceM);
+}
+
+/**
+ * Offer a searching trip to the next round of drivers.
  *
- * v1 is "broadcast to the nearest N by straight-line distance". The roadmap
- * (docs/PLAN.md) upgrades ranking to road ETA via Gebeta's one-to-many API
- * and moves to sequential offers with acceptance-rate weighting.
+ * 1. Up to 9 nearby available drivers who haven't been offered this trip
+ *    (straight-line, from Redis — fast and free).
+ * 2. Rank them by real driving time TO the pickup (Gebeta matrix; one call).
+ *    If Gebeta fails, fall back to straight-line order.
+ * 3. Offer to the best 2 for 20 s. When they decline or time out, the next
+ *    round goes to the next best (declineOffer and the sweeper call this again).
+ * First to accept wins (acceptTrip). Network calls happen outside transactions.
  */
 export async function dispatch(tripId: string): Promise<number> {
-  return withContext(SYSTEM, async (db) => {
-    const { rows } = await db.query(
+  const trip = await withContext(SYSTEM, async (db) => {
+    const { rows: [t] } = await db.query(
       `SELECT id, category_code, fare_estimate, ST_Y(pickup::geometry) AS lat, ST_X(pickup::geometry) AS lng,
-              pickup_address, dropoff_address, est_distance_m
+              pickup_address, dropoff_address, est_distance_m,
+              ARRAY(SELECT driver_id FROM trip_offers
+                     WHERE trip_id = trips.id AND status <> 'withdrawn') AS offered
          FROM trips WHERE id = $1 AND status = 'searching'`,
       [tripId],
     );
-    const trip = rows[0];
-    if (!trip) return 0;
-
-    const { rows: offered } = await db.query<{ driver_id: string }>(
-      "SELECT driver_id FROM trip_offers WHERE trip_id = $1", [tripId],
-    );
-    const skip = new Set(offered.map((o) => o.driver_id));
-    const candidates = (await findNearby(trip.category_code, { lat: trip.lat, lng: trip.lng }, 5000, OFFER_BATCH * 2))
-      .filter((d) => !skip.has(d.driverId))
-      .slice(0, OFFER_BATCH);
-
-    for (const c of candidates) {
-      const { rows: [offer] } = await db.query(
-        `INSERT INTO trip_offers (trip_id, driver_id, distance_m, expires_at)
-         VALUES ($1, $2, $3, now() + make_interval(secs => $4))
-         ON CONFLICT DO NOTHING RETURNING expires_at`,
-        [tripId, c.driverId, c.distanceM, OFFER_TTL_S],
-      );
-      if (!offer) continue;
-      emitToUser(c.driverId, "trip:offer", {
-        tripId, distanceToPickupM: c.distanceM, fareEstimate: trip.fare_estimate,
-        pickup: { lat: trip.lat, lng: trip.lng, address: trip.pickup_address },
-        dropoffAddress: trip.dropoff_address, tripDistanceM: trip.est_distance_m,
-        expiresAt: offer.expires_at,
-      });
-    }
-    return candidates.length;
+    return t;
   });
+  if (!trip) return 0;
+
+  const pickup = { lat: trip.lat, lng: trip.lng };
+  const skip = new Set<string>(trip.offered);
+  const nearby = (await findNearby(trip.category_code, pickup, SEARCH_RADIUS_M, CANDIDATES + skip.size))
+    .filter((d) => !skip.has(d.driverId))
+    .slice(0, CANDIDATES);
+  if (nearby.length === 0) return 0;
+
+  const legs = await drivingTimesTo(nearby, pickup).catch((err) => {
+    logger.warn({ err, tripId }, "driving-time ranking unavailable, using straight-line order");
+    return null;
+  });
+  const chosen = rankByEta(nearby, legs).slice(0, OFFER_BATCH);
+
+  const offers = await withContext(SYSTEM, async (db) => {
+    const made: { driver: RankedDriver; expiresAt: string }[] = [];
+    for (const d of chosen) {
+      const { rows: [o] } = await db.query(
+        `INSERT INTO trip_offers (trip_id, driver_id, distance_m, eta_s, expires_at)
+         SELECT $1, $2, $3, $4, now() + make_interval(secs => $5)
+          WHERE EXISTS (SELECT 1 FROM trips WHERE id = $1 AND status = 'searching')
+         ON CONFLICT (trip_id, driver_id) DO UPDATE
+           SET status = 'pending', distance_m = EXCLUDED.distance_m, eta_s = EXCLUDED.eta_s,
+               offered_at = now(), expires_at = EXCLUDED.expires_at, responded_at = NULL
+           WHERE trip_offers.status = 'withdrawn'
+         RETURNING expires_at`,
+        [tripId, d.driverId, d.distanceM, d.etaS, OFFER_TTL_S],
+      );
+      if (o) made.push({ driver: d, expiresAt: o.expires_at });
+    }
+    return made;
+  });
+
+  for (const { driver, expiresAt } of offers) {
+    emitToUser(driver.driverId, "trip:offer", {
+      tripId, distanceToPickupM: driver.distanceM, etaToPickupS: driver.etaS,
+      fareEstimate: trip.fare_estimate,
+      pickup: { ...pickup, address: trip.pickup_address },
+      dropoffAddress: trip.dropoff_address, tripDistanceM: trip.est_distance_m,
+      expiresAt,
+    });
+  }
+  return offers.length;
+}
+
+/**
+ * Share of offers a driver accepted among those they declined or let time
+ * out (last 100). Withdrawn offers (trip went elsewhere) don't count.
+ */
+export async function acceptanceRate(db: PoolClient, driverId: string): Promise<number | null> {
+  const { rows: [r] } = await db.query(
+    `SELECT count(*) FILTER (WHERE status = 'accepted')::int AS accepted, count(*)::int AS total
+       FROM (SELECT status FROM trip_offers
+              WHERE driver_id = $1 AND status IN ('accepted', 'declined', 'expired')
+              ORDER BY offered_at DESC LIMIT 100) o`,
+    [driverId],
+  );
+  return r.total === 0 ? null : r.accepted / r.total;
 }
 
 async function postLedger(
@@ -239,7 +305,7 @@ export async function acceptTrip(driverId: string, tripId: string) {
     if (!rows[0]) throw conflict("TRIP_ALREADY_TAKEN", "Another driver accepted this trip");
 
     await db.query(
-      `UPDATE trip_offers SET status = CASE WHEN id = $2 THEN 'accepted'::offer_status ELSE 'expired'::offer_status END,
+      `UPDATE trip_offers SET status = CASE WHEN id = $2 THEN 'accepted'::offer_status ELSE 'withdrawn'::offer_status END,
               responded_at = now()
         WHERE trip_id = $1 AND status = 'pending'`,
       [tripId, offer.id],
@@ -259,13 +325,27 @@ export async function acceptTrip(driverId: string, tripId: string) {
 }
 
 export async function declineOffer(ctx: DbContext, tripId: string) {
-  await withContext(ctx, (db) =>
-    db.query(
+  const declined = await withContext(ctx, async (db) =>
+    (await db.query(
       `UPDATE trip_offers SET status = 'declined', responded_at = now()
         WHERE trip_id = $1 AND driver_id = app.uid() AND status = 'pending'`,
       [tripId],
-    ),
+    )).rowCount,
   );
+  // Don't wait for the sweeper: if nobody else holds an offer, start the next round now.
+  if (declined) await redispatchIfIdle(tripId);
+}
+
+async function redispatchIfIdle(tripId: string) {
+  const idle = await withContext(SYSTEM, async (db) =>
+    (await db.query(
+      `SELECT 1 FROM trips t WHERE t.id = $1 AND t.status = 'searching'
+          AND NOT EXISTS (SELECT 1 FROM trip_offers o WHERE o.trip_id = t.id
+                            AND o.status = 'pending' AND o.expires_at > now())`,
+      [tripId],
+    )).rowCount,
+  );
+  if (idle) await dispatch(tripId).catch((err) => logger.error({ err, tripId }, "re-dispatch failed"));
 }
 
 /** arrive / start: driver moves their own trip forward (RLS: driver_id = me). */
@@ -298,44 +378,61 @@ export async function driverTransition(
   return trip;
 }
 
+async function getSetting<T>(db: PoolClient, key: string, fallback: T): Promise<T> {
+  const { rows: [r] } = await db.query("SELECT value FROM app_settings WHERE key = $1", [key]);
+  return r ? (r.value as T) : fallback;
+}
+
 /**
- * Complete a trip: lock the fare, settle money, free the driver.
- * Upfront pricing: the final fare is the quoted fare (re-pricing on large
- * route deviations is on the roadmap). For cash trips the driver keeps the
- * cash and the commission is debited from their wallet.
+ * Complete a trip: fix the final fare, settle money, free the driver.
+ * Final fare = the upfront quote + overtime (extra minutes beyond the
+ * estimate at the per-minute rate, capped at the admin-set share of the
+ * quote; business decision Oct 2026). For cash trips the driver collects the
+ * fare and the commission is debited from their prepaid wallet.
  */
 export async function completeTrip(driverId: string, tripId: string) {
   const trip = await withContext(SYSTEM, async (db) => {
-    const { rows } = await db.query(
-      `UPDATE trips AS t SET status = 'completed', completed_at = now(), final_fare = fare_estimate,
-              payment_status = CASE WHEN payment_method = 'cash' THEN 'paid'::payment_status ELSE payment_status END
-        WHERE id = $1 AND driver_id = $2 AND status = 'in_progress'
-        RETURNING ${TRIP_COLUMNS}`,
+    const { rows: [cur] } = await db.query(
+      `SELECT t.fare_estimate, t.est_duration_s, extract(epoch FROM now() - t.started_at)::int AS actual_s,
+              c.per_minute, c.commission_bps
+         FROM trips t JOIN vehicle_categories c ON c.code = t.category_code
+        WHERE t.id = $1 AND t.driver_id = $2 AND t.status = 'in_progress'
+        FOR UPDATE OF t`,
       [tripId, driverId],
     );
-    const trip = rows[0];
-    if (!trip) throw conflict("INVALID_TRANSITION", "Trip is not in progress");
+    if (!cur) throw conflict("INVALID_TRANSITION", "Trip is not in progress");
 
-    const { rows: [cat] } = await db.query(
-      "SELECT commission_bps FROM vehicle_categories WHERE code = $1", [trip.categoryCode],
+    const overtime = overtimeCharge({
+      quote: cur.fare_estimate, estimatedS: cur.est_duration_s ?? 0, actualS: cur.actual_s,
+      perMinute: cur.per_minute, capBps: Number(await getSetting(db, "overtime_cap_bps", 2500)),
+    });
+    const finalFare = cur.fare_estimate + overtime;
+    const commission = Math.round((finalFare * cur.commission_bps) / 10_000);
+
+    const { rows: [trip] } = await db.query(
+      `UPDATE trips AS t SET status = 'completed', completed_at = now(), final_fare = $3,
+              overtime_amount = $4, commission_amount = $5,
+              payment_status = CASE WHEN payment_method = 'cash' THEN 'paid'::payment_status ELSE payment_status END
+        WHERE id = $1 AND driver_id = $2
+        RETURNING ${TRIP_COLUMNS}`,
+      [tripId, driverId, finalFare, overtime, commission],
     );
-    const commission = Math.round((trip.finalFare * cat.commission_bps) / 10_000);
-    await db.query("UPDATE trips SET commission_amount = $2 WHERE id = $1", [tripId, commission]);
 
     if (trip.paymentMethod === "cash") {
       if (commission > 0) await postLedger(db, driverId, -commission, "commission", tripId);
     } else if (trip.paymentMethod === "wallet") {
-      await postLedger(db, trip.customerId, -trip.finalFare, "trip_payment", tripId);
-      await postLedger(db, driverId, trip.finalFare - commission, "trip_earning", tripId);
+      await postLedger(db, trip.customerId, -finalFare, "trip_payment", tripId);
+      await postLedger(db, driverId, finalFare - commission, "trip_earning", tripId);
       await db.query("UPDATE trips SET payment_status = 'paid' WHERE id = $1", [tripId]);
       trip.paymentStatus = "paid";
     }
-    // telebirr: payment is collected through the provider flow (roadmap phase 2).
+    // telebirr: payment is collected through the provider flow (after the pilot).
 
     await db.query("UPDATE driver_profiles SET availability = 'online' WHERE user_id = $1", [driverId]);
     await db.query(
       "INSERT INTO trip_events (trip_id, actor_id, event, data) VALUES ($1, $2, 'completed', $3)",
-      [tripId, driverId, { commission }],
+      [tripId, driverId, { quote: cur.fare_estimate, overtime, finalFare, commission,
+        estimatedS: cur.est_duration_s, actualS: cur.actual_s }],
     );
     return trip;
   });
@@ -345,7 +442,45 @@ export async function completeTrip(driverId: string, tripId: string) {
   return trip;
 }
 
+/**
+ * A driver backs out of a trip they accepted: the rider shouldn't lose their
+ * ride, so the trip goes back to searching (fresh search window) and the
+ * next drivers get it. The driver isn't offered this trip again.
+ */
+async function releaseByDriver(driverId: string, tripId: string, reason?: string) {
+  const trip = await withContext(SYSTEM, async (db) => {
+    const { rows: [t] } = await db.query(
+      `UPDATE trips AS t SET status = 'searching', driver_id = NULL, vehicle_id = NULL,
+              accepted_at = NULL, arrived_at = NULL, searching_since = now()
+        WHERE id = $1 AND driver_id = $2 AND status IN ('accepted', 'arrived')
+        RETURNING ${TRIP_COLUMNS}`,
+      [tripId, driverId],
+    );
+    if (!t) return null;
+    await db.query(
+      "UPDATE trip_offers SET status = 'declined', responded_at = now() WHERE trip_id = $1 AND driver_id = $2",
+      [tripId, driverId],
+    );
+    await db.query("UPDATE driver_profiles SET availability = 'online' WHERE user_id = $1", [driverId]);
+    await db.query(
+      "INSERT INTO trip_events (trip_id, actor_id, event, data) VALUES ($1, $2, 'driver_cancelled', $3)",
+      [tripId, driverId, { reason: reason ?? null }],
+    );
+    return t;
+  });
+  if (!trip) return null;
+  await afterTripEnded(driverId, trip.categoryCode);
+  emitToUser(trip.customerId, "trip:updated", trip);
+  emitToUser(driverId, "trip:updated", { id: tripId, status: "cancelled", cancelledBy: "driver" });
+  await dispatch(tripId).catch((err) => logger.error({ err, tripId }, "re-dispatch after driver cancel failed"));
+  return trip;
+}
+
 export async function cancelTrip(ctx: DbContext, tripId: string, reason?: string) {
+  if (ctx.role === "driver" && ctx.userId) {
+    const released = await releaseByDriver(ctx.userId, tripId, reason);
+    if (released) return { ...released, ridePin: undefined };
+  }
   // Staff act on behalf of the company, recorded as 'admin' in trip_actor.
   const actor = ctx.role === "admin" || ctx.role === "staff" ? "admin" : ctx.role;
   const t = TRANSITIONS.cancel;
@@ -370,7 +505,7 @@ export async function cancelTrip(ctx: DbContext, tripId: string, reason?: string
   });
 
   await withContext(SYSTEM, (db) =>
-    db.query("UPDATE trip_offers SET status = 'expired' WHERE trip_id = $1 AND status = 'pending'", [tripId]),
+    db.query("UPDATE trip_offers SET status = 'withdrawn' WHERE trip_id = $1 AND status = 'pending'", [tripId]),
   );
   if (trip.driverId) {
     await withContext(SYSTEM, (db) =>
@@ -392,29 +527,53 @@ async function afterTripEnded(driverId: string, category: string) {
 }
 
 /**
- * Periodic sweep (every few seconds): expire trips nobody accepted and
- * re-dispatch searching trips whose offers all lapsed.
- * Single-instance for now; with several API instances wrap it in a Redis
- * lock or move it to a worker (see docs/PLAN.md).
+ * Periodic sweep (every few seconds), on one API instance at a time:
+ *  - expire trips nobody accepted within the search window
+ *  - start the next offer round for searching trips with no live offers
+ *  - take drivers whose app stopped pinging out of matching
+ *  - repair drivers marked "on trip" without an active trip
  */
 export async function sweepTrips() {
-  const { expired, retry } = await withContext(SYSTEM, async (db) => {
+  // Several API instances may run the sweeper; only one per interval works.
+  const lock = await redis.set("sweep:lock", process.pid.toString(), "PX", SWEEP_LOCK_MS, "NX");
+  if (!lock) return;
+
+  const stale = await staleDrivers();
+  for (const id of stale) await setUnavailable(id);
+
+  const { expired, retry, wentOffline } = await withContext(SYSTEM, async (db) => {
     const expired = (await db.query<{ id: string; customer_id: string }>(
       `UPDATE trips SET status = 'expired', cancelled_at = now(), cancelled_by = 'system'
-        WHERE status = 'searching' AND requested_at < now() - make_interval(secs => $1)
+        WHERE status = 'searching' AND searching_since < now() - make_interval(secs => $1)
         RETURNING id, customer_id`,
       [SEARCH_TIMEOUT_S],
     )).rows;
     await db.query(
-      "UPDATE trip_offers SET status = 'expired' WHERE status = 'pending' AND expires_at <= now()",
+      `UPDATE trip_offers SET status = 'withdrawn'
+        WHERE status = 'pending' AND trip_id IN (SELECT id FROM trips WHERE status <> 'searching')`,
     );
+    await db.query("UPDATE trip_offers SET status = 'expired' WHERE status = 'pending' AND expires_at <= now()");
     const retry = (await db.query<{ id: string }>(
       `SELECT t.id FROM trips t
         WHERE t.status = 'searching'
           AND NOT EXISTS (SELECT 1 FROM trip_offers o WHERE o.trip_id = t.id AND o.status = 'pending')`,
     )).rows;
-    return { expired, retry };
+    const wentOffline = stale.length === 0 ? [] : (await db.query<{ user_id: string }>(
+      `UPDATE driver_profiles SET availability = 'offline'
+        WHERE user_id = ANY($1) AND availability = 'online' RETURNING user_id`,
+      [stale],
+    )).rows;
+    await db.query(
+      `UPDATE driver_profiles dp SET availability = 'online'
+        WHERE availability = 'on_trip' AND NOT EXISTS (
+          SELECT 1 FROM trips t WHERE t.driver_id = dp.user_id
+             AND t.status IN ('accepted', 'arrived', 'in_progress'))`,
+    );
+    return { expired, retry, wentOffline };
   });
   for (const t of expired) emitToUser(t.customer_id, "trip:updated", { id: t.id, status: "expired" });
-  for (const t of retry) await dispatch(t.id);
+  for (const d of wentOffline) {
+    emitToUser(d.user_id, "driver:availability", { availability: "offline", reason: "NO_LOCATION_UPDATES" });
+  }
+  for (const t of retry) await dispatch(t.id).catch((err) => logger.error({ err, tripId: t.id }, "dispatch failed"));
 }

@@ -249,3 +249,31 @@ export async function legsFrom(origin: LatLng, targets: LatLng[]): Promise<(Leg 
   const json = `[${targets.map((t) => `{${t.lat},${t.lng}}`).join(",")}]`;
   return parseLegs(await call("/api/route/onm", { origin: `${origin.lat},${origin.lng}`, json }), targets.length);
 }
+
+/**
+ * Road distance/time from each origin TO one destination (Gebeta matrix:
+ * every pair, both directions). Used by dispatch: driver → pickup, which can
+ * differ a lot from pickup → driver on one-way and divided roads (live:
+ * Megenagna→Bole 5.0 km, Bole→Megenagna 4.2 km). Up to 9 origins per call
+ * (the matrix takes 10 points). Throws on failure so callers can fall back.
+ */
+export async function drivingTimesTo(origins: LatLng[], destination: LatLng): Promise<(Leg | null)[]> {
+  if (origins.length === 0) return [];
+  if (origins.length > 9) throw new Error("Gebeta matrix accepts at most 10 points (9 origins + destination)");
+  if (!env.GEBETA_API_KEY) throw new Error("GEBETA_API_KEY not configured");
+  const points = [...origins, destination];
+  const json = `[${points.map((p) => `{${p.lat},${p.lng}}`).join(",")}]`;
+  return parseMatrixTo(await call("/api/route/matrix", { json }), origins.length);
+}
+
+/** From a full matrix, the legs i → last point, for i < origins. Distance is km. */
+export function parseMatrixTo(body: any, origins: number): (Leg | null)[] {
+  const legs: (Leg | null)[] = Array.from({ length: origins }, () => null);
+  for (const l of Array.isArray(body?.origin_to_destination) ? body.origin_to_destination : []) {
+    const from = Number(l?.from), to = Number(l?.to), km = Number(l?.distance), s = Number(l?.time);
+    if (to === origins && Number.isInteger(from) && from >= 0 && from < origins && Number.isFinite(km) && Number.isFinite(s)) {
+      legs[from] = { distanceM: Math.round(km * 1000), durationS: Math.round(s) };
+    }
+  }
+  return legs;
+}

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { normalizeEthiopianPhone } from "../src/lib/phone.js";
 import { estimateRoute, toLngLatPath } from "../src/modules/geo/gebeta.js";
-import { calculateFare } from "../src/modules/pricing/fare.js";
+import { calculateFare, overtimeCharge } from "../src/modules/pricing/fare.js";
 import { canTransition } from "../src/modules/trips/state-machine.js";
 import { BOLE, PIASSA } from "./helpers.js";
 
@@ -65,5 +65,25 @@ describe("gebeta helpers", () => {
     expect(r.distanceM).toBeGreaterThan(7000);
     expect(r.distanceM).toBeLessThan(9000);
     expect(r.source).toBe("estimate");
+  });
+});
+
+describe("overtimeCharge (quote + extra minutes, capped)", () => {
+  const base = { quote: 27600, estimatedS: 1170, perMinute: 200, capBps: 2500 };
+  it("nothing when on time or early", () => {
+    expect(overtimeCharge({ ...base, actualS: 1170 })).toBe(0);
+    expect(overtimeCharge({ ...base, actualS: 600 })).toBe(0);
+  });
+  it("extra minutes rounded up, at the per-minute rate", () => {
+    // 10.5 min late → 11 min × 2 ETB = 22 ETB
+    expect(overtimeCharge({ ...base, actualS: 1170 + 630 })).toBe(2200);
+  });
+  it("capped at 25% of the quote, rounded down to a whole birr", () => {
+    // 2 hours late → 120 × 2 = 240 ETB, cap = 25% × 276 = 69 ETB
+    expect(overtimeCharge({ ...base, actualS: 1170 + 7200 })).toBe(6900);
+  });
+  it("cap follows the admin setting", () => {
+    expect(overtimeCharge({ ...base, actualS: 1170 + 7200, capBps: 0 })).toBe(0);
+    expect(overtimeCharge({ ...base, actualS: 1170 + 7200, capBps: 2000 })).toBe(5500);
   });
 });

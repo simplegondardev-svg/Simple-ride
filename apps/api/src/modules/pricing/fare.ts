@@ -38,3 +38,23 @@ export function calculateFare(
   const commission = Math.round((total * rules.commissionBps) / 10_000);
   return { base, distance, time, multiplier, bookingFee: rules.bookingFee, total, commission };
 }
+
+/**
+ * Extra charge when a trip takes longer than estimated (business decision,
+ * Oct 2026): the extra minutes at the category's per-minute rate, capped at
+ * `capBps` of the quote (default 25%). Never negative; rounded so the final
+ * fare stays a whole birr and never exceeds quote + cap.
+ */
+export function overtimeCharge(input: {
+  quote: number;          // santim, whole birr
+  estimatedS: number;     // estimated trip duration
+  actualS: number;        // started → completed
+  perMinute: number;      // santim
+  capBps: number;
+}): number {
+  const extraMinutes = Math.ceil(Math.max(0, input.actualS - input.estimatedS) / 60);
+  if (extraMinutes === 0 || input.perMinute <= 0) return 0;
+  const charge = Math.ceil((extraMinutes * input.perMinute) / 100) * 100;      // up to a whole birr
+  const cap = Math.floor((input.quote * Math.max(0, input.capBps)) / 10_000 / 100) * 100; // down to a whole birr
+  return Math.min(charge, cap);
+}

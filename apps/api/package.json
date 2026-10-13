@@ -11,7 +11,8 @@
     "db:migrate": "tsx --env-file-if-exists=.env src/db/migrate.ts",
     "db:seed": "tsx --env-file-if-exists=.env src/db/seed.ts",
     "test": "vitest run",
-    "reset-password": "tsx --env-file-if-exists=.env src/db/reset-password.ts"
+    "reset-password": "tsx --env-file-if-exists=.env src/db/reset-password.ts",
+    "simulate": "tsx --env-file-if-exists=.env scripts/simulate.ts"
   },
   "dependencies": {
     "cors": "^2.8.6",
