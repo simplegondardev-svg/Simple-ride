@@ -38,9 +38,11 @@ jobs:
             "CREATE ROLE simpleride_app LOGIN PASSWORD 'app_dev_password' NOBYPASSRLS; GRANT CONNECT ON DATABASE simpleride TO simpleride_app;"
       - name: S3-compatible test server (moto) for the storage driver test
         run: |
-          pip install --quiet "moto[server]>=5,<6"
-          nohup moto_server -H 127.0.0.1 -p 9000 > moto.log 2>&1 &
-          for i in $(seq 1 20); do curl -fs http://127.0.0.1:9000/ >/dev/null && break; sleep 1; done
+          python3 -m pip install --quiet "moto[server]>=5,<6"
+          # Module form: the moto_server script may not be on PATH after a user-level pip install.
+          nohup python3 -m moto.server -H 127.0.0.1 -p 9000 > "$RUNNER_TEMP/moto.log" 2>&1 &
+          for i in $(seq 1 30); do curl -fs http://127.0.0.1:9000/ >/dev/null && exit 0; sleep 1; done
+          echo "moto did not start"; cat "$RUNNER_TEMP/moto.log"; exit 1
       - run: pnpm --filter @simple-ride/api typecheck
       - run: pnpm --filter @simple-ride/api db:migrate
       - run: pnpm --filter @simple-ride/api db:seed
