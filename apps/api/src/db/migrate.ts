@@ -41,7 +41,7 @@ export async function migrate(connectionString: string, log = console.log) {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && path.resolve(fileURLToPath(import.meta.url)) === path.resolve(process.argv[1])) {
   const url = process.env.DATABASE_OWNER_URL;
   if (!url) throw new Error("DATABASE_OWNER_URL is required to run migrations");
   migrate(url).then(
