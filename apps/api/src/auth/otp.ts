@@ -24,6 +24,17 @@ export const consoleSms: SmsSender = {
 
 let sms: SmsSender = consoleSms;
 export const setSmsSender = (sender: SmsSender) => { sms = sender; };
+export const getSmsSender = () => sms;
+
+export class MockSmsSender implements SmsSender {
+  sent: { phone: string; message: string }[] = [];
+  async send(phone: string, message: string) {
+    this.sent.push({ phone, message });
+  }
+  clear() {
+    this.sent = [];
+  }
+}
 
 /** Issue a 6-digit code. Returns it only when OTP_DEV_ECHO is on. */
 export async function issueOtp(phone: string): Promise<string | undefined> {
