@@ -1,7 +1,25 @@
 import { randomInt } from "node:crypto";
+import { getSmsSender, issueOtp, MockSmsSender, setSmsSender } from "../src/auth/otp.js";
 import { SYSTEM, withContext } from "../src/db/context.js";
+import { normalizeEthiopianPhone } from "../src/lib/phone.js";
 
 export const randomPhone = () => `+2519${randomInt(10_000_000, 99_999_999)}`;
+
+/** Issue an OTP code via MockSmsSender for tests that register users. */
+export async function getOtpCode(phone: string): Promise<string> {
+  const normalized = normalizeEthiopianPhone(phone) ?? phone;
+  const current = getSmsSender();
+  let mock: MockSmsSender;
+  if (current instanceof MockSmsSender) {
+    mock = current;
+  } else {
+    mock = new MockSmsSender();
+    setSmsSender(mock);
+  }
+  await issueOtp(normalized);
+  const msg = mock.sent.filter((s) => s.phone === normalized).pop()?.message;
+  return msg?.replace("Simple Ride code: ", "") || "123456";
+}
 
 // Bole and Piassa, Addis Ababa
 export const BOLE = { lat: 8.9961, lng: 38.7894 };

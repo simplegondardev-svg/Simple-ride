@@ -6,15 +6,17 @@ import { SYSTEM, withContext } from "../src/db/context.js";
 import { pool } from "../src/db/pool.js";
 import { redis } from "../src/lib/redis.js";
 import { rankByEta, sweepTrips } from "../src/modules/trips/service.js";
-import { BOLE, fundDriver, grant, makeBackoffice, PASSWORD, PIASSA, randomPhone } from "./helpers.js";
+import { BOLE, fundDriver, getOtpCode, grant, makeBackoffice, PASSWORD, PIASSA, randomPhone } from "./helpers.js";
 
 const app = createApp();
 const bearer = (t: string) => ({ Authorization: `Bearer ${t}` });
 type Session = { accessToken: string; user: { id: string } };
 
 async function register(role: "customer" | "driver"): Promise<Session> {
+  const phone = randomPhone();
+  const code = await getOtpCode(phone);
   return (await request(app).post("/api/v1/auth/register")
-    .send({ phone: randomPhone(), password: PASSWORD, role, platform: "android" }).expect(201)).body;
+    .send({ phone, code, password: PASSWORD, role, platform: "android" }).expect(201)).body;
 }
 
 /** An approved driver with a vehicle, online at `at`. */

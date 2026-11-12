@@ -4,15 +4,16 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { pool } from "../src/db/pool.js";
 import { redis } from "../src/lib/redis.js";
-import { BOLE, makeBackoffice, PASSWORD, PIASSA, randomPhone, uploadRequiredDocuments } from "./helpers.js";
+import { BOLE, getOtpCode, makeBackoffice, PASSWORD, PIASSA, randomPhone, uploadRequiredDocuments } from "./helpers.js";
 
 const app = createApp();
 
 type Session = { accessToken: string; refreshToken: string; user: { id: string } };
 
 async function register(phone: string, role: "customer" | "driver"): Promise<Session> {
+  const code = await getOtpCode(phone);
   const res = await request(app).post("/api/v1/auth/register")
-    .send({ phone, password: PASSWORD, role, platform: "android" }).expect(201);
+    .send({ phone, code, password: PASSWORD, role, platform: "android" }).expect(201);
   return res.body;
 }
 

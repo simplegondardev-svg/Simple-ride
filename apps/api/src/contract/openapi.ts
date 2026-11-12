@@ -41,9 +41,12 @@ const fileKey = z.object({ key: z.string().describe("Storage key, as in the sign
 
 export const operations: Operation[] = [
   // ── Auth
+  { method: "post", path: "/auth/register/start", tag: "Auth", access: "public", summary: "Send a verification code for registration",
+    body: auth.registerStartBody, ok: [200, R.Ok],
+    description: "Sends a 6-digit OTP to the phone if registration is allowed. Returns { ok: true } identically whether an account exists or not to prevent enumeration." },
   { method: "post", path: "/auth/register", tag: "Auth", access: "public", summary: "Create a rider or driver account",
     body: auth.registerBody, ok: [201, R.AuthSession],
-    description: "Phone numbers are not verified yet (testing phase). Errors: ACCOUNT_EXISTS, WEAK_PASSWORD, RATE_LIMITED." },
+    description: "Completes registration with a valid OTP verification code. Sets phone_verified_at. Errors: ACCOUNT_EXISTS, WEAK_PASSWORD, INVALID_OTP, RATE_LIMITED." },
   { method: "post", path: "/auth/login", tag: "Auth", access: "public", summary: "Log in with phone and password (all roles)",
     body: auth.loginBody, ok: [200, R.AuthSession],
     description: "On 409 PASSWORD_CHANGE_REQUIRED (temporary password), repeat the call with `newPassword`. Other errors: INVALID_CREDENTIALS, ACCOUNT_LOCKED (details.lockedUntil), ACCOUNT_SUSPENDED." },

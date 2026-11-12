@@ -159,7 +159,7 @@ describe("HTTP: admin manages staff, staff use what they're given", () => {
 
   it("staff can't self-register", async () => {
     const res = await request(app).post("/api/v1/auth/register")
-      .send({ phone: randomPhone(), password: PASSWORD, role: "staff", platform: "web" });
+      .send({ phone: randomPhone(), code: "123456", password: PASSWORD, role: "staff", platform: "web" });
     expect(res.status).toBe(422);
   });
 

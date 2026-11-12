@@ -67,6 +67,55 @@ const { mockRedis, storage } = vi.hoisted(() => {
       if (item.expiresAt === undefined) return -1;
       return Math.max(0, Math.ceil((item.expiresAt - now()) / 1000));
     }),
+    eval: vi.fn(
+      async (
+        _script: string,
+        _numKeys: number,
+        key1: string,
+        key2: string,
+        expectedHash: string,
+        ttl: string | number,
+        maxAttempts: string | number,
+      ) => {
+        if (isExpired(key1)) return 0;
+        const storedItem = storage.get(key1);
+        if (!storedItem) return 0;
+
+        isExpired(key2);
+        const attemptItem = storage.get(key2);
+        const curr = parseInt(attemptItem?.val || "0", 10);
+        const next = curr + 1;
+        const ttlSec = typeof ttl === "number" ? ttl : parseInt(String(ttl), 10);
+        const expiresAt = now() + ttlSec * 1000;
+        storage.set(key2, { val: String(next), expiresAt });
+
+        const max = typeof maxAttempts === "number" ? maxAttempts : parseInt(String(maxAttempts), 10);
+        if (next > max) {
+          storage.delete(key1);
+          return 0;
+        }
+
+        let diff = 0;
+        const s = typeof storedItem.val === "string" ? storedItem.val : "";
+        const e = typeof expectedHash === "string" ? expectedHash : "";
+        if (s.length !== 64 || e.length !== 64) {
+          diff++;
+        }
+        for (let i = 0; i < 64; i++) {
+          const a = i < s.length ? s.charCodeAt(i) : 0;
+          const b = i < e.length ? e.charCodeAt(i) : 0;
+          const delta = a - b;
+          diff += delta * delta;
+        }
+
+        if (diff === 0) {
+          storage.delete(key1);
+          storage.delete(key2);
+          return 1;
+        }
+        return 0;
+      },
+    ),
     multi: vi.fn(() => {
       const queue: (() => void)[] = [];
       const chain = {
@@ -178,6 +227,18 @@ describe("OTP and SMS Abstraction (offline unit tests)", () => {
       await issueOtp(phone);
       expect(storage.has(`otp:attempts:${phone}`)).toBe(false);
     });
+
+    it("clears OTP and attempt keys if SMS delivery fails", async () => {
+      const failingSender = {
+        async send() {
+          throw new Error("SMS network failure");
+        },
+      };
+      setSmsSender(failingSender);
+      await expect(issueOtp(phone)).rejects.toThrow("SMS network failure");
+      expect(storage.has(`otp:${phone}`)).toBe(false);
+      expect(storage.has(`otp:attempts:${phone}`)).toBe(false);
+    });
   });
 
   describe("verifyOtp: correctness, single-use, and attempt limits", () => {
@@ -242,6 +303,38 @@ describe("OTP and SMS Abstraction (offline unit tests)", () => {
       // Now even the correct code is rejected because the OTP was burned
       const subsequentAttempt = await verifyOtp(phone, correctCode);
       expect(subsequentAttempt).toBe(false);
+    });
+
+    it("handles malformed stored hashes safely without throwing", async () => {
+      // Stored value is shorter than 64 characters
+      storage.set(`otp:${phone}`, { val: "short-corrupted-hash" });
+      expect(await verifyOtp(phone, "123456")).toBe(false);
+      expect(storage.get(`otp:attempts:${phone}`)?.val).toBe("1");
+    });
+
+    it("requires all 64 characters of the SHA-256 digest to match (arithmetic scan)", async () => {
+      await issueOtp(phone);
+      const correctCode = mockSender.sent[0]!.message.replace("Simple Ride code: ", "");
+      const realStored = storage.get(`otp:${phone}`)!.val;
+
+      // Tamper with first character of stored hash (index 0)
+      const tamperedFirst = (realStored[0] === "a" ? "b" : "a") + realStored.slice(1);
+      storage.set(`otp:${phone}`, { val: tamperedFirst });
+      expect(await verifyOtp(phone, correctCode)).toBe(false);
+
+      // Tamper with middle character of stored hash (index 32)
+      const tamperedMiddle = realStored.slice(0, 32) + (realStored[32] === "a" ? "b" : "a") + realStored.slice(33);
+      storage.set(`otp:${phone}`, { val: tamperedMiddle });
+      expect(await verifyOtp(phone, correctCode)).toBe(false);
+
+      // Tamper with last character of stored hash (index 63)
+      const tamperedLast = realStored.slice(0, 63) + (realStored[63] === "a" ? "b" : "a");
+      storage.set(`otp:${phone}`, { val: tamperedLast });
+      expect(await verifyOtp(phone, correctCode)).toBe(false);
+
+      // Restore untampered hash and verify it succeeds
+      storage.set(`otp:${phone}`, { val: realStored });
+      expect(await verifyOtp(phone, correctCode)).toBe(true);
     });
   });
 

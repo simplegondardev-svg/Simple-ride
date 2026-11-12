@@ -7,7 +7,7 @@ import { pool } from "../src/db/pool.js";
 import { redis } from "../src/lib/redis.js";
 import { sweepTrips } from "../src/modules/trips/service.js";
 import {
-  BOLE, fundDriver, grant, makeBackoffice, PASSWORD, PIASSA, PNG, randomPhone, uploadDocument, uploadRequiredDocuments,
+  BOLE, fundDriver, getOtpCode, grant, makeBackoffice, PASSWORD, PIASSA, PNG, randomPhone, uploadDocument, uploadRequiredDocuments,
 } from "./helpers.js";
 
 const app = createApp();
@@ -15,8 +15,10 @@ const bearer = (t: string) => ({ Authorization: `Bearer ${t}` });
 const api = (path: string) => `/api/v1${path}`;
 
 async function register(role: "customer" | "driver") {
+  const phone = randomPhone();
+  const code = await getOtpCode(phone);
   return (await request(app).post(api("/auth/register"))
-    .send({ phone: randomPhone(), password: PASSWORD, role, platform: "android" }).expect(201)).body;
+    .send({ phone, code, password: PASSWORD, role, platform: "android" }).expect(201)).body;
 }
 async function staffWith(permissions: string[]) {
   const s = await makeBackoffice("staff");

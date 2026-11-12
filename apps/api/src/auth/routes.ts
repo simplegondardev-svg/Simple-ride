@@ -7,6 +7,7 @@ import { AppError } from "../lib/errors.js";
 import { normalizeEthiopianPhone } from "../lib/phone.js";
 import { rateLimit } from "../lib/rate-limit.js";
 import { requireAuth } from "./middleware.js";
+import { issueOtp, verifyOtp } from "./otp.js";
 import { dummyHash, hashPassword, passwordProblem, verifyPassword } from "./password.js";
 import { createSession, revokeSession, rotateSession, signAccessToken, type UserRole } from "./tokens.js";
 
@@ -60,11 +61,16 @@ async function issueTokens(
 
 // ───────────────────────── Register ─────────────────────────
 
-
 // Request schemas (exported: the OpenAPI spec is built from them).
+export const registerStartBody = z
+  .object({
+    phone: phoneSchema,
+    role: z.enum(["customer", "driver"]).default("customer"),
+  });
 export const registerBody = z
   .object({
     phone: phoneSchema,
+    code: z.string().trim().regex(/^\d{6}$/, "Must be a 6-digit verification code"),
     password: z.string(),
     fullName: z.string().trim().min(2).max(100).optional(),
     role: z.enum(["customer", "driver"]).default("customer"),
@@ -84,19 +90,45 @@ export const changePasswordBody = z
 export const refreshBody = z.object({ refreshToken: z.string().min(10) });
 export const logoutBody = z.object({ refreshToken: z.string() });
 
+authRouter.post("/register/start", async (req, res) => {
+  const body = registerStartBody.parse(req.body);
+  await rateLimit(`register-start:ip:${req.ip}`, 30, 600);
+  await rateLimit(`otp:phone:${body.phone}`, 3, 600);
+
+  const existing = await withContext(SYSTEM, async (db) => {
+    const { rows } = await db.query(
+      "SELECT 1 FROM users WHERE phone = $1 AND role = $2",
+      [body.phone, body.role],
+    );
+    return rows.length > 0;
+  });
+
+  if (!existing) {
+    await issueOtp(body.phone);
+  }
+
+  res.json({ ok: true });
+});
+
 authRouter.post("/register", async (req, res) => {
   const body = registerBody.parse(req.body);
   // Per-IP limits are loose on purpose: mobile carriers put many subscribers
   // behind one IP. Per-account lockout is the real defence for login.
   await rateLimit(`register:ip:${req.ip}`, 60, 600);
   checkNewPassword(body.password, body.phone);
+
+  const verified = await verifyOtp(body.phone, body.code);
+  if (!verified) {
+    throw new AppError(400, "INVALID_OTP", "Invalid or expired verification code");
+  }
+
   const hash = await hashPassword(body.password);
 
   const result = await withContext(SYSTEM, async (db) => {
     let user;
     try {
       ({ rows: [user] } = await db.query(
-        `INSERT INTO users (phone, role, full_name) VALUES ($1, $2, $3) RETURNING ${USER_COLS}`,
+        `INSERT INTO users (phone, role, full_name, phone_verified_at) VALUES ($1, $2, $3, now()) RETURNING ${USER_COLS}`,
         [body.phone, body.role, body.fullName ?? null],
       ));
     } catch (err: any) {

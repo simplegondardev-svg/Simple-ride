@@ -7,7 +7,7 @@ import * as R from "../src/contract/responses.js";
 import { SYSTEM, withContext } from "../src/db/context.js";
 import { pool } from "../src/db/pool.js";
 import { redis } from "../src/lib/redis.js";
-import { BOLE, fundDriver, PASSWORD, PIASSA, randomPhone } from "./helpers.js";
+import { BOLE, fundDriver, getOtpCode, PASSWORD, PIASSA, randomPhone } from "./helpers.js";
 
 /**
  * Real responses vs the documented response models (what the Dart client is
@@ -51,8 +51,14 @@ afterAll(async () => {
 
 describe("responses match the documented models", () => {
   it("auth", async () => {
+    const phone = randomPhone();
+    const start = await request(app).post("/api/v1/auth/register/start")
+      .send({ phone }).expect(200);
+    conforms(R.Ok, start.body, "POST /auth/register/start");
+
+    const code = await getOtpCode(phone);
     const reg = await request(app).post("/api/v1/auth/register")
-      .send({ phone: randomPhone(), password: PASSWORD, platform: "android", fullName: "Contract Rider" }).expect(201);
+      .send({ phone, code, password: PASSWORD, platform: "android", fullName: "Contract Rider" }).expect(201);
     conforms(R.AuthSession, reg.body, "POST /auth/register");
     rider = reg.body;
 
@@ -78,8 +84,10 @@ describe("responses match the documented models", () => {
   });
 
   it("a full ride: driver, estimate, trip, offers, lifecycle", async () => {
+    const driverPhone = randomPhone();
+    const driverCode = await getOtpCode(driverPhone);
     const d = await request(app).post("/api/v1/auth/register")
-      .send({ phone: randomPhone(), password: PASSWORD, role: "driver", platform: "android" }).expect(201);
+      .send({ phone: driverPhone, code: driverCode, password: PASSWORD, role: "driver", platform: "android" }).expect(201);
     driver = d.body;
     await request(app).put("/api/v1/drivers/me/profile").set(bearer(driver.accessToken))
       .send({ licenseNumber: "AA-1", licenseExpiresOn: "2030-01-01" }).expect(204);

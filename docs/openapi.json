@@ -1752,14 +1752,14 @@
     }
   },
   "paths": {
-    "/auth/register": {
+    "/auth/register/start": {
       "post": {
-        "operationId": "postAuthRegister",
+        "operationId": "postAuthRegisterStart",
         "tags": [
           "Auth"
         ],
-        "summary": "Create a rider or driver account",
-        "description": "Anyone.\n\nPhone numbers are not verified yet (testing phase). Errors: ACCOUNT_EXISTS, WEAK_PASSWORD, RATE_LIMITED.",
+        "summary": "Send a verification code for registration",
+        "description": "Anyone.\n\nSends a 6-digit OTP to the phone if registration is allowed. Returns { ok: true } identically whether an account exists or not to prevent enumeration.",
         "security": [],
         "requestBody": {
           "required": true,
@@ -1770,6 +1770,89 @@
                 "properties": {
                   "phone": {
                     "type": "string"
+                  },
+                  "role": {
+                    "type": "string",
+                    "enum": [
+                      "customer",
+                      "driver"
+                    ],
+                    "description": "Default: customer"
+                  }
+                },
+                "required": [
+                  "phone"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict with the current state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid input (VALIDATION_FAILED with details) or a business rule",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests (RATE_LIMITED)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/register": {
+      "post": {
+        "operationId": "postAuthRegister",
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Create a rider or driver account",
+        "description": "Anyone.\n\nCompletes registration with a valid OTP verification code. Sets phone_verified_at. Errors: ACCOUNT_EXISTS, WEAK_PASSWORD, INVALID_OTP, RATE_LIMITED.",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "phone": {
+                    "type": "string"
+                  },
+                  "code": {
+                    "type": "string",
+                    "pattern": "^\\d{6}$"
                   },
                   "password": {
                     "type": "string"
@@ -1802,6 +1885,7 @@
                 },
                 "required": [
                   "phone",
+                  "code",
                   "password",
                   "platform"
                 ]
