@@ -68,6 +68,28 @@ export async function makeBackoffice(role: "admin" | "staff", phone = randomPhon
   return { id, phone };
 }
 
+/** Create an unverified legacy user with credentials for verification testing. */
+export async function makeLegacyUser(role: "customer" | "driver", phone = randomPhone()) {
+  const { hashPassword } = await import("../src/auth/password.js");
+  const hash = await hashPassword(PASSWORD);
+  const id = await withContext(SYSTEM, async (db) => {
+    const { rows: [u] } = await db.query(
+      "INSERT INTO users (phone, role, phone_verified_at) VALUES ($1, $2, NULL) RETURNING id",
+      [phone, role],
+    );
+    await db.query(
+      "INSERT INTO user_credentials (user_id, password_hash, must_change_password) VALUES ($1, $2, false)",
+      [u.id, hash],
+    );
+    await db.query("INSERT INTO wallets (user_id) VALUES ($1)", [u.id]);
+    if (role === "driver") {
+      await db.query("INSERT INTO driver_profiles (user_id) VALUES ($1)", [u.id]);
+    }
+    return u.id as string;
+  });
+  return { id, phone };
+}
+
 /** Credit a driver's prepaid deposit directly (default: the 10,000 ETB minimum). */
 export async function fundDriver(driverId: string, amount = 1_000_000) {
   const { postLedger } = await import("../src/modules/wallet/ledger.js");

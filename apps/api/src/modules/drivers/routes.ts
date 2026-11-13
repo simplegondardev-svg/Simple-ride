@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { z } from "zod";
-import { requireRole } from "../../auth/middleware.js";
+import { requireRole, requireVerifiedPhone } from "../../auth/middleware.js";
 import { withContext } from "../../db/context.js";
 import { AppError } from "../../lib/errors.js";
 import { latLng, uuidParam } from "../../lib/schemas.js";
@@ -100,7 +100,7 @@ driversRouter.get("/me/refunds", async (req, res) => {
 });
 
 /** Ask for the remaining deposit back. Allowed once the driver has been approved for the refund period (default 90 days). */
-driversRouter.post("/me/refunds", async (req, res) => {
+driversRouter.post("/me/refunds", requireVerifiedPhone, async (req, res) => {
   const { note } = refundRequestBody.parse(req.body ?? {});
   const refund = await withContext(req.ctx, async (db) => {
     const settings = await moneySettings(db);
@@ -236,7 +236,7 @@ driversRouter.post("/me/vehicles", async (req, res) => {
 });
 
 /** Go online: requires approval and an approved current vehicle. */
-driversRouter.post("/me/online", async (req, res) => {
+driversRouter.post("/me/online", requireVerifiedPhone, async (req, res) => {
   const { location } = goOnlineBody.parse(req.body);
   const category = await withContext(req.ctx, async (db) => {
     const { rows: [row] } = await db.query(
@@ -275,7 +275,7 @@ driversRouter.post("/me/location", async (req, res) => {
   res.status(204).end();
 });
 
-driversRouter.get("/me/offers", async (req, res) => {
+driversRouter.get("/me/offers", requireVerifiedPhone, async (req, res) => {
   const rows = await withContext(req.ctx, async (db) =>
     (await db.query(
       `SELECT o.trip_id AS "tripId", o.distance_m AS "distanceToPickupM", o.eta_s AS "etaToPickupS",

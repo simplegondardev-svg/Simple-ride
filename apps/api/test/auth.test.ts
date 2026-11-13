@@ -5,7 +5,7 @@ import { consoleSms, MockSmsSender, setSmsSender } from "../src/auth/otp.js";
 import { SYSTEM, withContext } from "../src/db/context.js";
 import { pool } from "../src/db/pool.js";
 import { redis } from "../src/lib/redis.js";
-import { getOtpCode, grant, makeBackoffice, PASSWORD, randomPhone } from "./helpers.js";
+import { getOtpCode, grant, makeBackoffice, makeLegacyUser, PASSWORD, randomPhone } from "./helpers.js";
 
 const app = createApp();
 const bearer = (token: string) => ({ Authorization: `Bearer ${token}` });
@@ -584,5 +584,181 @@ describe("session length", () => {
     };
     expect(await hours(a.body.refreshToken)).toBe(12);
     expect(await hours(r.body.refreshToken)).toBe(720);
+  });
+});
+
+describe("legacy account phone verification (POST /auth/phone/verify/*)", () => {
+  it("legacy unverified user can start and complete phone verification, and existing token works immediately", async () => {
+    const legacy = await makeLegacyUser("customer");
+    const loginRes = await request(app).post("/api/v1/auth/login")
+      .send({ phone: legacy.phone, password: PASSWORD, role: "customer", platform: "android" }).expect(200);
+
+    const token = loginRes.body.accessToken;
+    expect(loginRes.body.user.phoneVerified).toBe(false);
+
+    // Initial /users/me reports phoneVerified = false
+    const meBefore = await request(app).get("/api/v1/users/me").set(bearer(token)).expect(200);
+    expect(meBefore.body.phoneVerified).toBe(false);
+
+    // Start verification
+    mockSms.clear();
+    await request(app).post("/api/v1/auth/phone/verify/start").set(bearer(token)).expect(200, { ok: true });
+
+    // SMS was sent
+    expect(mockSms.sent.length).toBe(1);
+    expect(mockSms.sent[0]!.phone).toBe(legacy.phone);
+    const code = mockSms.sent[0]!.message.replace("Simple Ride code: ", "");
+
+    // Confirm verification
+    await request(app).post("/api/v1/auth/phone/verify/confirm").set(bearer(token))
+      .send({ code }).expect(200, { ok: true });
+
+    // Database record now has phone_verified_at set
+    const dbUser = await withContext(SYSTEM, async (db) => {
+      const { rows: [u] } = await db.query("SELECT phone_verified_at FROM users WHERE id = $1", [legacy.id]);
+      return u;
+    });
+    expect(dbUser.phone_verified_at).not.toBeNull();
+
+    // Existing access token immediately reflects phoneVerified = true without refresh
+    const meAfter = await request(app).get("/api/v1/users/me").set(bearer(token)).expect(200);
+    expect(meAfter.body.phoneVerified).toBe(true);
+  });
+
+  it("does not allow user A to substitute user B's phone number", async () => {
+    const userA = await makeLegacyUser("customer");
+    const userB = await makeLegacyUser("customer");
+
+    const aLogin = await request(app).post("/api/v1/auth/login")
+      .send({ phone: userA.phone, password: PASSWORD, role: "customer", platform: "android" }).expect(200);
+
+    mockSms.clear();
+    // Pass user B's phone in request body
+    await request(app).post("/api/v1/auth/phone/verify/start")
+      .set(bearer(aLogin.body.accessToken))
+      .send({ phone: userB.phone })
+      .expect(200, { ok: true });
+
+    // SMS must be sent ONLY to user A's registered phone
+    expect(mockSms.sent.length).toBe(1);
+    expect(mockSms.sent[0]!.phone).toBe(userA.phone);
+    expect(mockSms.sent[0]!.phone).not.toBe(userB.phone);
+  });
+
+  it("rejects unauthenticated requests", async () => {
+    await request(app).post("/api/v1/auth/phone/verify/start").expect(401);
+    await request(app).post("/api/v1/auth/phone/verify/confirm").send({ code: "123456" }).expect(401);
+  });
+
+  it("rejects invalid, expired, and replayed verification codes", async () => {
+    const legacy = await makeLegacyUser("customer");
+    const loginRes = await request(app).post("/api/v1/auth/login")
+      .send({ phone: legacy.phone, password: PASSWORD, role: "customer", platform: "android" }).expect(200);
+    const token = loginRes.body.accessToken;
+
+    mockSms.clear();
+    await request(app).post("/api/v1/auth/phone/verify/start").set(bearer(token)).expect(200, { ok: true });
+    const code = mockSms.sent[0]!.message.replace("Simple Ride code: ", "");
+
+    // Wrong code fails with 400 INVALID_OTP
+    const wrong = await request(app).post("/api/v1/auth/phone/verify/confirm").set(bearer(token))
+      .send({ code: "000000" }).expect(400);
+    expect(wrong.body.error.code).toBe("INVALID_OTP");
+
+    // 5 attempts allowed; 6th burns the OTP
+    for (let i = 0; i < 4; i++) {
+      await request(app).post("/api/v1/auth/phone/verify/confirm").set(bearer(token))
+        .send({ code: "000000" }).expect(400);
+    }
+    // 6th attempt burns it
+    await request(app).post("/api/v1/auth/phone/verify/confirm").set(bearer(token))
+      .send({ code: "000000" }).expect(400);
+
+    // Even the right code now fails because OTP was burned
+    const burned = await request(app).post("/api/v1/auth/phone/verify/confirm").set(bearer(token))
+      .send({ code }).expect(400);
+    expect(burned.body.error.code).toBe("INVALID_OTP");
+
+    // Fresh OTP
+    mockSms.clear();
+    await request(app).post("/api/v1/auth/phone/verify/start").set(bearer(token)).expect(200, { ok: true });
+    const freshCode = mockSms.sent[0]!.message.replace("Simple Ride code: ", "");
+
+    // Successful confirm
+    await request(app).post("/api/v1/auth/phone/verify/confirm").set(bearer(token))
+      .send({ code: freshCode }).expect(200, { ok: true });
+
+    // Idempotent for already verified user
+    await request(app).post("/api/v1/auth/phone/verify/confirm").set(bearer(token))
+      .send({ code: freshCode }).expect(200, { ok: true });
+  });
+
+  it("atomic OTP consumption prevents concurrent verification race", async () => {
+    const legacy = await makeLegacyUser("customer");
+    const loginRes = await request(app).post("/api/v1/auth/login")
+      .send({ phone: legacy.phone, password: PASSWORD, role: "customer", platform: "android" }).expect(200);
+    const token = loginRes.body.accessToken;
+
+    mockSms.clear();
+    await request(app).post("/api/v1/auth/phone/verify/start").set(bearer(token)).expect(200, { ok: true });
+    const code = mockSms.sent[0]!.message.replace("Simple Ride code: ", "");
+
+    // Fire 2 concurrent requests
+    const [res1, res2] = await Promise.all([
+      request(app).post("/api/v1/auth/phone/verify/confirm").set(bearer(token)).send({ code }),
+      request(app).post("/api/v1/auth/phone/verify/confirm").set(bearer(token)).send({ code }),
+    ]);
+
+    const statuses = [res1.status, res2.status].sort();
+    expect(statuses[0]).toBe(200);
+  });
+
+  it("enforces rate limits on phone verify start and confirm", async () => {
+    const legacy = await makeLegacyUser("customer");
+    const loginRes = await request(app).post("/api/v1/auth/login")
+      .send({ phone: legacy.phone, password: PASSWORD, role: "customer", platform: "android" }).expect(200);
+    const token = loginRes.body.accessToken;
+
+    // 3 start requests per phone allowed; 4th rejected
+    mockSms.clear();
+    await request(app).post("/api/v1/auth/phone/verify/start").set(bearer(token)).expect(200);
+    await request(app).post("/api/v1/auth/phone/verify/start").set(bearer(token)).expect(200);
+    await request(app).post("/api/v1/auth/phone/verify/start").set(bearer(token)).expect(200);
+
+    const fourth = await request(app).post("/api/v1/auth/phone/verify/start").set(bearer(token)).expect(429);
+    expect(fourth.body.error.code).toBe("RATE_LIMITED");
+
+    // Start IP rate limit: 30 allowed, 31st rejected
+    const startIp = "203.0.113.88";
+    await redis.set(`rl:phone-verify-start:ip:${startIp}`, "30");
+    const startLimited = await request(app).post("/api/v1/auth/phone/verify/start")
+      .set(bearer(token))
+      .set("X-Forwarded-For", startIp)
+      .expect(429);
+    expect(startLimited.body.error.code).toBe("RATE_LIMITED");
+    await redis.del(`rl:phone-verify-start:ip:${startIp}`);
+
+    // Confirm IP rate limit: 60 allowed, 61st rejected
+    const testIp = "203.0.113.77";
+    await redis.set(`rl:phone-verify-confirm:ip:${testIp}`, "60");
+    const limited = await request(app).post("/api/v1/auth/phone/verify/confirm")
+      .set(bearer(token))
+      .set("X-Forwarded-For", testIp)
+      .send({ code: "123456" }).expect(429);
+    expect(limited.body.error.code).toBe("RATE_LIMITED");
+    await redis.del(`rl:phone-verify-confirm:ip:${testIp}`);
+  });
+
+  it("already verified accounts receive idempotent responses without sending SMS", async () => {
+    const user = await register(randomPhone()).expect(201);
+    const token = user.body.accessToken;
+
+    mockSms.clear();
+    await request(app).post("/api/v1/auth/phone/verify/start").set(bearer(token)).expect(200, { ok: true });
+    // No SMS sent because user is already verified
+    expect(mockSms.sent.length).toBe(0);
+
+    await request(app).post("/api/v1/auth/phone/verify/confirm").set(bearer(token))
+      .send({ code: "123456" }).expect(200, { ok: true });
   });
 });

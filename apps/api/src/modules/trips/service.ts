@@ -209,11 +209,43 @@ export async function dispatch(tripId: string): Promise<number> {
   const near = (await findNearby(trip.category_code, pickup, SEARCH_RADIUS_M, CANDIDATES + skip.size))
     .filter((d) => !skip.has(d.driverId));
   // Drivers whose prepaid commission balance is below the threshold get no offers.
-  const funded = await withContext(SYSTEM, async (db) => {
-    const [s, bal] = await Promise.all([moneySettings(db), balances(db, near.map((d) => d.driverId))]);
-    return new Set(near.filter((d) => (bal.get(d.driverId) ?? 0) >= s.lowBalanceThreshold).map((d) => d.driverId));
+  // Evict only unverified drivers from Redis GEO; do not evict low-balance verified drivers.
+  const { eligible, unverified } = await withContext(SYSTEM, async (db) => {
+    const driverIds = near.map((d) => d.driverId);
+    const [s, bal, verifiedRows] = await Promise.all([
+      moneySettings(db),
+      balances(db, driverIds),
+      driverIds.length > 0
+        ? db.query<{ id: string }>(
+            "SELECT id FROM users WHERE id = ANY($1) AND phone_verified_at IS NOT NULL",
+            [driverIds],
+          )
+        : Promise.resolve({ rows: [] as { id: string }[] }),
+    ]);
+    const verified = new Set(verifiedRows.rows.map((r) => r.id));
+    const eligible = new Set<string>();
+    const unverified: string[] = [];
+    for (const d of near) {
+      if (!verified.has(d.driverId)) {
+        unverified.push(d.driverId);
+      } else if ((bal.get(d.driverId) ?? 0) >= s.lowBalanceThreshold) {
+        eligible.add(d.driverId);
+      }
+    }
+    return { eligible, unverified };
   });
-  const nearby = near.filter((d) => funded.has(d.driverId)).slice(0, CANDIDATES);
+
+  for (const driverId of unverified) {
+    await setUnavailable(driverId);
+    await withContext(SYSTEM, (db) =>
+      db.query(
+        "UPDATE driver_profiles SET availability = 'offline' WHERE user_id = $1 AND availability = 'online'",
+        [driverId],
+      ),
+    );
+  }
+
+  const nearby = near.filter((d) => eligible.has(d.driverId)).slice(0, CANDIDATES);
   if (nearby.length === 0) return 0;
 
   const legs = await drivingTimesTo(nearby, pickup).catch((err) => {
@@ -271,6 +303,13 @@ export async function acceptanceRate(db: PoolClient, driverId: string): Promise<
 /** Driver accepts an offer. Runs in SYSTEM context: drivers can't self-assign. */
 export async function acceptTrip(driverId: string, tripId: string) {
   const trip = await withContext(SYSTEM, async (db) => {
+    const { rows: [u] } = await db.query<{ phone_verified_at: string | null }>(
+      "SELECT phone_verified_at FROM users WHERE id = $1", [driverId],
+    );
+    if (!u || u.phone_verified_at == null) {
+      throw new AppError(403, "PHONE_NOT_VERIFIED", "Phone verification required");
+    }
+
     const { rows: [offer] } = await db.query(
       `SELECT id FROM trip_offers
         WHERE trip_id = $1 AND driver_id = $2 AND status = 'pending' AND expires_at > now()
@@ -539,6 +578,22 @@ export async function cancelTrip(ctx: DbContext, tripId: string, reason?: string
 /** Put the driver back into the matching pool at their last known position. */
 async function afterTripEnded(driverId: string, category: string) {
   await redis.del(`driver:trip:${driverId}`);
+  const verified = await withContext(SYSTEM, async (db) => {
+    const { rows: [u] } = await db.query<{ phone_verified_at: string | null }>(
+      "SELECT phone_verified_at FROM users WHERE id = $1", [driverId],
+    );
+    return u?.phone_verified_at != null;
+  });
+  if (!verified) {
+    await withContext(SYSTEM, (db) =>
+      db.query(
+        "UPDATE driver_profiles SET availability = 'offline' WHERE user_id = $1 AND availability = 'online'",
+        [driverId],
+      ),
+    );
+    await setUnavailable(driverId);
+    return;
+  }
   const pos = await getPosition(driverId);
   if (pos) await setAvailable(driverId, category, pos);
 }

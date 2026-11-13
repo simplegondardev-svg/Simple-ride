@@ -2,9 +2,10 @@ import { randomUUID } from "node:crypto";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
+import { SYSTEM, withContext } from "../src/db/context.js";
 import { pool } from "../src/db/pool.js";
 import { redis } from "../src/lib/redis.js";
-import { BOLE, getOtpCode, makeBackoffice, PASSWORD, PIASSA, randomPhone, uploadRequiredDocuments } from "./helpers.js";
+import { BOLE, getOtpCode, makeBackoffice, makeLegacyUser, PASSWORD, PIASSA, randomPhone, uploadRequiredDocuments } from "./helpers.js";
 
 const app = createApp();
 
@@ -191,5 +192,85 @@ describe("full ride", () => {
     const stranger = await register(randomPhone(), "customer");
     await request(app).post(`/api/v1/trips/${tripId}/rate`).set(bearer(stranger.accessToken))
       .send({ score: 1 }).expect(404);
+  });
+});
+
+describe("phone verification route gating and active trip immunity", () => {
+  it("unverified customer cannot create trips (403 PHONE_NOT_VERIFIED), and no trip is created", async () => {
+    const unverifiedCustomer = await makeLegacyUser("customer");
+    const loginRes = await request(app).post("/api/v1/auth/login")
+      .send({ phone: unverifiedCustomer.phone, password: PASSWORD, role: "customer", platform: "android" }).expect(200);
+    const token = loginRes.body.accessToken;
+
+    const res = await request(app).post("/api/v1/trips").set(bearer(token)).send({
+      clientRequestId: randomUUID(), categoryCode: "economy", paymentMethod: "cash",
+      pickup: { ...BOLE, address: "Bole" }, dropoff: { ...PIASSA, address: "Piassa" },
+    }).expect(403);
+    expect(res.body.error.code).toBe("PHONE_NOT_VERIFIED");
+
+    // Verify no trip was created in database
+    await withContext(SYSTEM, async (db) => {
+      const { rows } = await db.query("SELECT * FROM trips WHERE customer_id = $1", [unverifiedCustomer.id]);
+      expect(rows.length).toBe(0);
+    });
+
+    // Safe read operations remain accessible
+    await request(app).post("/api/v1/trips/estimate").set(bearer(token)).send({ pickup: BOLE, dropoff: PIASSA }).expect(200);
+    await request(app).get("/api/v1/trips").set(bearer(token)).expect(200);
+    await request(app).get("/api/v1/users/me/wallet").set(bearer(token)).expect(200);
+  });
+
+  it("existing assigned driver with unverified phone can continue GPS tracking and finish an assigned trip", async () => {
+    // Verified customer creates a trip
+    const rider = await register(randomPhone(), "customer");
+    const tripRes = await request(app).post("/api/v1/trips").set(bearer(rider.accessToken)).send({
+      clientRequestId: randomUUID(), categoryCode: "economy", paymentMethod: "cash",
+      pickup: { ...BOLE, address: "Bole" }, dropoff: { ...PIASSA, address: "Piassa" },
+    }).expect(201);
+    const assignedTripId = tripRes.body.id;
+    const assignedPin = tripRes.body.ridePin;
+
+    // Create an unverified driver
+    const unverifiedDriver = await makeLegacyUser("driver");
+    await withContext(SYSTEM, async (db) => {
+      await db.query("UPDATE driver_profiles SET approval_status = 'approved' WHERE user_id = $1", [unverifiedDriver.id]);
+      await db.query(
+        `INSERT INTO vehicles (driver_id, category_code, plate_number, make, model, color, status, is_current)
+         VALUES ($1, 'economy', $2, 'Toyota', 'Yaris', 'White', 'approved', true)`,
+        [unverifiedDriver.id, `T-${randomUUID().slice(0, 8)}`],
+      );
+      // Directly assign the driver to simulate an in-progress trip that started prior to CP1.4 deployment
+      await db.query(
+        "UPDATE trips SET status = 'accepted', driver_id = $1 WHERE id = $2",
+        [unverifiedDriver.id, assignedTripId],
+      );
+    });
+
+    const driverLogin = await request(app).post("/api/v1/auth/login")
+      .send({ phone: unverifiedDriver.phone, password: PASSWORD, role: "driver", platform: "android" }).expect(200);
+    const driverToken = driverLogin.body.accessToken;
+
+    // Driver can continue GPS tracking
+    await request(app).post("/api/v1/drivers/me/location")
+      .set(bearer(driverToken))
+      .send({ lat: BOLE.lat, lng: BOLE.lng, heading: 90 })
+      .expect(204);
+
+    // Driver can mark arrive
+    await request(app).post(`/api/v1/trips/${assignedTripId}/arrive`)
+      .set(bearer(driverToken))
+      .expect(200);
+
+    // Driver can start trip with PIN
+    await request(app).post(`/api/v1/trips/${assignedTripId}/start`)
+      .set(bearer(driverToken))
+      .send({ ridePin: assignedPin })
+      .expect(200);
+
+    // Driver can complete trip
+    const completed = await request(app).post(`/api/v1/trips/${assignedTripId}/complete`)
+      .set(bearer(driverToken))
+      .expect(200);
+    expect(completed.body.status).toBe("completed");
   });
 });

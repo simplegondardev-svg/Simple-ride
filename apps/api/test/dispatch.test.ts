@@ -6,7 +6,8 @@ import { SYSTEM, withContext } from "../src/db/context.js";
 import { pool } from "../src/db/pool.js";
 import { redis } from "../src/lib/redis.js";
 import { rankByEta, sweepTrips } from "../src/modules/trips/service.js";
-import { BOLE, fundDriver, getOtpCode, grant, makeBackoffice, PASSWORD, PIASSA, randomPhone } from "./helpers.js";
+import { setAvailable, setUnavailable } from "../src/modules/drivers/presence.js";
+import { BOLE, fundDriver, getOtpCode, grant, makeBackoffice, makeLegacyUser, PASSWORD, PIASSA, randomPhone } from "./helpers.js";
 
 const app = createApp();
 const bearer = (t: string) => ({ Authorization: `Bearer ${t}` });
@@ -287,5 +288,149 @@ describe("settings", () => {
     const staffToken = (await request(app).post("/api/v1/auth/login")
       .send({ phone: staff.phone, password: PASSWORD, role: "staff", platform: "web" })).body.accessToken;
     await request(app).patch("/api/v1/admin/settings").set(bearer(staffToken)).send({ overtimeCapBps: 0 }).expect(403);
+  });
+});
+
+describe("driver phone verification route gating and dispatch protection", () => {
+  it("unverified driver cannot go online, accept new offers, or request refunds", async () => {
+    const unverifiedDriver = await makeLegacyUser("driver");
+    await withContext(SYSTEM, async (db) => {
+      await db.query("UPDATE driver_profiles SET approval_status = 'approved' WHERE user_id = $1", [unverifiedDriver.id]);
+      await db.query(
+        `INSERT INTO vehicles (driver_id, category_code, plate_number, make, model, color, status, is_current)
+         VALUES ($1, 'economy', $2, 'Toyota', 'Vitz', 'Blue', 'approved', true)`,
+        [unverifiedDriver.id, `T-${randomUUID().slice(0, 8)}`],
+      );
+    });
+    await fundDriver(unverifiedDriver.id);
+
+    const loginRes = await request(app).post("/api/v1/auth/login")
+      .send({ phone: unverifiedDriver.phone, password: PASSWORD, role: "driver", platform: "android" }).expect(200);
+    const token = loginRes.body.accessToken;
+
+    // Cannot go online
+    const onlineRes = await request(app).post("/api/v1/drivers/me/online")
+      .set(bearer(token)).send({ location: BOLE }).expect(403);
+    expect(onlineRes.body.error.code).toBe("PHONE_NOT_VERIFIED");
+
+    // Cannot request refund
+    const refundRes = await request(app).post("/api/v1/drivers/me/refunds")
+      .set(bearer(token)).send({ note: "Bank transfer" }).expect(403);
+    expect(refundRes.body.error.code).toBe("PHONE_NOT_VERIFIED");
+
+    // Cannot retrieve offers
+    const offersRes = await request(app).get("/api/v1/drivers/me/offers")
+      .set(bearer(token)).expect(403);
+    expect(offersRes.body.error.code).toBe("PHONE_NOT_VERIFIED");
+
+    // Going offline remains possible
+    await request(app).post("/api/v1/drivers/me/offline").set(bearer(token)).expect(200);
+
+    // Create a trip with a verified rider
+    const rider = await register("customer");
+    const trip = await book(rider);
+
+    // Unverified driver cannot accept the trip
+    const acceptRes = await request(app).post(`/api/v1/trips/${trip.id}/accept`)
+      .set(bearer(token)).expect(403);
+    expect(acceptRes.body.error.code).toBe("PHONE_NOT_VERIFIED");
+
+    // Declining an offer remains possible (returns 204)
+    await request(app).post(`/api/v1/trips/${trip.id}/decline`).set(bearer(token)).expect(204);
+  });
+
+  it("dispatch skips and evicts unverified legacy driver placed directly in Redis GEO, while preserving verified low-balance driver", async () => {
+    // 1. Create unverified legacy driver and place directly into Redis GEO
+    const unverifiedDriver = await makeLegacyUser("driver");
+    await withContext(SYSTEM, async (db) => {
+      await db.query("UPDATE driver_profiles SET approval_status = 'approved', availability = 'online' WHERE user_id = $1", [unverifiedDriver.id]);
+    });
+    await fundDriver(unverifiedDriver.id);
+    await setAvailable(unverifiedDriver.id, "economy", BOLE);
+
+    // Verify unverified driver is in Redis GEO initially
+    const initSeen = await redis.zscore("drivers:seen", unverifiedDriver.id);
+    expect(initSeen).not.toBeNull();
+
+    // 2. Create a verified driver with low balance and place into Redis GEO
+    const verifiedLowBal = await register("driver");
+    await withContext(SYSTEM, async (db) => {
+      await db.query("UPDATE driver_profiles SET approval_status = 'approved', availability = 'online' WHERE user_id = $1", [verifiedLowBal.user.id]);
+    });
+    // Fund with only 1 santim (below threshold)
+    await fundDriver(verifiedLowBal.user.id, 1);
+    await setAvailable(verifiedLowBal.user.id, "economy", north(200));
+
+    // 3. Create a verified driver with sufficient balance
+    const verifiedReady = await onlineDriver(north(500));
+
+    // 4. Customer books a trip
+    const rider = await register("customer");
+    const trip = await book(rider);
+
+    // Verify unverified driver was skipped and evicted from Redis GEO & seen
+    const unverifiedSeenAfter = await redis.zscore("drivers:seen", unverifiedDriver.id);
+    expect(unverifiedSeenAfter).toBeNull();
+    const unverifiedGeoScore = await redis.zscore("drivers:geo:economy", unverifiedDriver.id);
+    expect(unverifiedGeoScore).toBeNull();
+
+    // Verify verified low-balance driver was NOT evicted
+    const lowBalSeenAfter = await redis.zscore("drivers:seen", verifiedLowBal.user.id);
+    expect(lowBalSeenAfter).not.toBeNull();
+
+    // Verify offer was made to the verified ready driver, and NOT to the unverified driver
+    const offers = await offersOf(verifiedReady);
+    expect(offers).toContain(trip.id);
+
+    await withContext(SYSTEM, async (db) => {
+      const { rows } = await db.query(
+        "SELECT * FROM trip_offers WHERE trip_id = $1 AND driver_id = $2",
+        [trip.id, unverifiedDriver.id],
+      );
+      expect(rows.length).toBe(0);
+    });
+  });
+
+  it("handles a pending offer that existed for an unverified driver before enforcement", async () => {
+    const unverifiedDriver = await makeLegacyUser("driver");
+    await withContext(SYSTEM, async (db) => {
+      await db.query("UPDATE driver_profiles SET approval_status = 'approved' WHERE user_id = $1", [unverifiedDriver.id]);
+      await db.query(
+        `INSERT INTO vehicles (driver_id, category_code, plate_number, make, model, color, status, is_current)
+         VALUES ($1, 'economy', $2, 'Toyota', 'Corolla', 'White', 'approved', true)`,
+        [unverifiedDriver.id, `T-${randomUUID().slice(0, 8)}`],
+      );
+    });
+    await fundDriver(unverifiedDriver.id);
+
+    const verifiedDriver = await onlineDriver(north(300));
+    const rider = await register("customer");
+    const trip = await book(rider);
+
+    // Simulate an existing pending offer inserted prior to enforcement
+    await withContext(SYSTEM, async (db) => {
+      await db.query(
+        `INSERT INTO trip_offers (trip_id, driver_id, distance_m, eta_s, status, expires_at)
+         VALUES ($1, $2, 100, 60, 'pending', now() + interval '20 seconds')
+         ON CONFLICT (trip_id, driver_id) DO UPDATE SET status = 'pending', expires_at = now() + interval '20 seconds'`,
+        [trip.id, unverifiedDriver.id],
+      );
+    });
+
+    const unverifiedLogin = await request(app).post("/api/v1/auth/login")
+      .send({ phone: unverifiedDriver.phone, password: PASSWORD, role: "driver", platform: "android" }).expect(200);
+
+    // Unverified driver cannot accept the pending offer
+    const acceptRes = await request(app).post(`/api/v1/trips/${trip.id}/accept`)
+      .set(bearer(unverifiedLogin.body.accessToken)).expect(403);
+    expect(acceptRes.body.error.code).toBe("PHONE_NOT_VERIFIED");
+
+    // Declining safely releases it
+    await request(app).post(`/api/v1/trips/${trip.id}/decline`)
+      .set(bearer(unverifiedLogin.body.accessToken)).expect(204);
+
+    // Verified driver can accept
+    await request(app).post(`/api/v1/trips/${trip.id}/accept`)
+      .set(bearer(verifiedDriver.accessToken)).expect(200);
   });
 });

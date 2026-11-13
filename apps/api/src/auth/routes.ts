@@ -3,7 +3,7 @@ import type { PoolClient } from "pg";
 import { z } from "zod";
 import { env } from "../config/env.js";
 import { SYSTEM, withContext } from "../db/context.js";
-import { AppError } from "../lib/errors.js";
+import { AppError, notFound } from "../lib/errors.js";
 import { normalizeEthiopianPhone } from "../lib/phone.js";
 import { rateLimit } from "../lib/rate-limit.js";
 import { requireAuth } from "./middleware.js";
@@ -25,7 +25,7 @@ import { createSession, revokeSession, rotateSession, signAccessToken, type User
  */
 export const authRouter = Router();
 
-const USER_COLS = `id, phone, role, status, full_name AS "fullName", locale`;
+const USER_COLS = `id, phone, role, status, full_name AS "fullName", locale, (phone_verified_at IS NOT NULL) AS "phoneVerified"`;
 const MAX_FAILED = 5;
 const LOCK_MINUTES = 15;
 
@@ -89,6 +89,9 @@ export const changePasswordBody = z
   .object({ currentPassword: z.string().min(1), newPassword: z.string(), ...device });
 export const refreshBody = z.object({ refreshToken: z.string().min(10) });
 export const logoutBody = z.object({ refreshToken: z.string() });
+export const phoneVerifyConfirmBody = z.object({
+  code: z.string().trim().regex(/^\d{6}$/, "Must be a 6-digit verification code"),
+});
 
 authRouter.post("/register/start", async (req, res) => {
   const body = registerStartBody.parse(req.body);
@@ -270,4 +273,52 @@ authRouter.post("/logout", async (req, res) => {
   const { refreshToken } = logoutBody.parse(req.body);
   await withContext(SYSTEM, (db) => revokeSession(db, refreshToken));
   res.status(204).end();
+});
+
+// ───────────────────────── Phone verification (existing accounts) ─────────────────────────
+
+authRouter.post("/phone/verify/start", requireAuth, async (req, res) => {
+  await rateLimit(`phone-verify-start:ip:${req.ip}`, 30, 600);
+
+  const user = await withContext(SYSTEM, async (db) => {
+    const { rows: [u] } = await db.query<{ phone: string; phone_verified_at: string | null }>(
+      "SELECT phone, phone_verified_at FROM users WHERE id = $1",
+      [req.ctx.userId],
+    );
+    return u;
+  });
+  if (!user) throw notFound("User");
+
+  if (!user.phone_verified_at) {
+    await rateLimit(`otp:phone:${user.phone}`, 3, 600);
+    await issueOtp(user.phone);
+  }
+
+  res.json({ ok: true });
+});
+
+authRouter.post("/phone/verify/confirm", requireAuth, async (req, res) => {
+  const body = phoneVerifyConfirmBody.parse(req.body);
+  await rateLimit(`phone-verify-confirm:ip:${req.ip}`, 60, 600);
+
+  const user = await withContext(SYSTEM, async (db) => {
+    const { rows: [u] } = await db.query<{ id: string; phone: string; phone_verified_at: string | null }>(
+      "SELECT id, phone, phone_verified_at FROM users WHERE id = $1",
+      [req.ctx.userId],
+    );
+    return u;
+  });
+  if (!user) throw notFound("User");
+
+  if (!user.phone_verified_at) {
+    const verified = await verifyOtp(user.phone, body.code);
+    if (!verified) {
+      throw new AppError(400, "INVALID_OTP", "Invalid or expired verification code");
+    }
+    await withContext(SYSTEM, (db) =>
+      db.query("UPDATE users SET phone_verified_at = now() WHERE id = $1 AND phone_verified_at IS NULL", [user.id]),
+    );
+  }
+
+  res.json({ ok: true });
 });

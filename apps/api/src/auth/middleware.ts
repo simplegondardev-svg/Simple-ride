@@ -1,5 +1,5 @@
 import type { RequestHandler } from "express";
-import { ANONYMOUS, type DbContext } from "../db/context.js";
+import { ANONYMOUS, withContext, type DbContext } from "../db/context.js";
 import { AppError } from "../lib/errors.js";
 import { verifyAccessToken, type UserRole } from "./tokens.js";
 
@@ -8,6 +8,7 @@ declare global {
     interface Request {
       /** RLS context for this request; pass to withContext(). */
       ctx: DbContext;
+      phoneVerified?: boolean;
     }
   }
 }
@@ -42,3 +43,24 @@ export const requireRole =
     }
     next();
   };
+
+export const requireVerifiedPhone: RequestHandler = async (req, _res, next) => {
+  if (!req.ctx.userId) return next(new AppError(401, "UNAUTHENTICATED", "Login required"));
+  if (req.ctx.role === "admin" || req.ctx.role === "staff") return next();
+
+  try {
+    const row = await withContext(req.ctx, async (db) => {
+      const { rows } = await db.query<{ phone_verified_at: string | null }>(
+        "SELECT phone_verified_at FROM users WHERE id = app.uid()",
+      );
+      return rows[0];
+    });
+    if (!row || row.phone_verified_at == null) {
+      return next(new AppError(403, "PHONE_NOT_VERIFIED", "Phone verification required"));
+    }
+    req.phoneVerified = true;
+    next();
+  } catch (err) {
+    next(err);
+  }
+};

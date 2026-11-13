@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { z } from "zod";
-import { requireAuth, requireRole } from "../../auth/middleware.js";
+import { requireAuth, requireRole, requireVerifiedPhone } from "../../auth/middleware.js";
 import { withContext } from "../../db/context.js";
 import { notFound } from "../../lib/errors.js";
 import { latLng, page, place, uuidParam } from "../../lib/schemas.js";
@@ -33,7 +33,7 @@ tripsRouter.post("/estimate", async (req, res) => {
   res.json(await estimate(req.ctx, body.pickup, body.dropoff));
 });
 
-tripsRouter.post("/", requireRole("customer"), async (req, res) => {
+tripsRouter.post("/", requireRole("customer"), requireVerifiedPhone, async (req, res) => {
   const body = createTripBody.parse(req.body);
   const { trip, created } = await createTrip(req.ctx, body);
   res.status(created ? 201 : 200).json(trip);
@@ -86,7 +86,7 @@ tripsRouter.post("/:id/cancel", async (req, res) => {
 });
 
 // ── Driver actions ──
-tripsRouter.post("/:id/accept", requireRole("driver"), async (req, res) => {
+tripsRouter.post("/:id/accept", requireRole("driver"), requireVerifiedPhone, async (req, res) => {
   const { id } = uuidParam.parse(req.params);
   res.json(await acceptTrip(req.ctx.userId!, id));
 });

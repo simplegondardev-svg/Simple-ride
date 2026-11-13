@@ -126,6 +126,9 @@
               "ti"
             ]
           },
+          "phoneVerified": {
+            "type": "boolean"
+          },
           "createdAt": {
             "type": "string",
             "format": "date-time"
@@ -137,7 +140,8 @@
           "role",
           "status",
           "fullName",
-          "locale"
+          "locale",
+          "phoneVerified"
         ]
       },
       "TokenPair": {
@@ -2289,6 +2293,179 @@
         }
       }
     },
+    "/auth/phone/verify/start": {
+      "post": {
+        "operationId": "postAuthPhoneVerifyStart",
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Send OTP to verify account phone number",
+        "description": "Any signed-in user.\n\nSends a 6-digit verification code to the authenticated user's registered phone number. Errors: RATE_LIMITED.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not logged in or session expired (UNAUTHENTICATED, INVALID_TOKEN, ACCOUNT_INACTIVE)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed (FORBIDDEN, MISSING_PERMISSION)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict with the current state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid input (VALIDATION_FAILED with details) or a business rule",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/phone/verify/confirm": {
+      "post": {
+        "operationId": "postAuthPhoneVerifyConfirm",
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Confirm OTP to verify account phone number",
+        "description": "Any signed-in user.\n\nVerifies the 6-digit code and sets phone_verified_at. Errors: INVALID_OTP, RATE_LIMITED.",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "code": {
+                    "type": "string",
+                    "pattern": "^\\d{6}$"
+                  }
+                },
+                "required": [
+                  "code"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not logged in or session expired (UNAUTHENTICATED, INVALID_TOKEN, ACCOUNT_INACTIVE)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed (FORBIDDEN, MISSING_PERMISSION)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict with the current state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid input (VALIDATION_FAILED with details) or a business rule",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/users/me": {
       "get": {
         "operationId": "getUsersMe",
@@ -3079,7 +3256,7 @@
           "Trips"
         ],
         "summary": "Request a ride",
-        "description": "Riders.\n\nIdempotent on clientRequestId: a retry returns the original trip with 200. Errors: ACTIVE_TRIP_EXISTS, UNKNOWN_CATEGORY, OUT_OF_SERVICE_AREA.",
+        "description": "Riders.\n\nIdempotent on clientRequestId: a retry returns the original trip with 200. Errors: ACTIVE_TRIP_EXISTS, UNKNOWN_CATEGORY, OUT_OF_SERVICE_AREA, PHONE_NOT_VERIFIED.",
         "security": [
           {
             "bearer": []
@@ -3637,7 +3814,7 @@
           "Driver trips"
         ],
         "summary": "Accept an offer",
-        "description": "Drivers.\n\nErrors: OFFER_NOT_AVAILABLE, TRIP_ALREADY_TAKEN, DRIVER_BUSY, NO_ACTIVE_VEHICLE.",
+        "description": "Drivers.\n\nErrors: OFFER_NOT_AVAILABLE, TRIP_ALREADY_TAKEN, DRIVER_BUSY, NO_ACTIVE_VEHICLE, PHONE_NOT_VERIFIED.",
         "security": [
           {
             "bearer": []
@@ -4386,7 +4563,7 @@
           "Driver"
         ],
         "summary": "Go online at a location",
-        "description": "Drivers.\n\nErrors: DRIVER_NOT_APPROVED, NO_ACTIVE_VEHICLE, ON_TRIP. Then send driver:location over the socket every 3–5 s; drivers silent for 60 s are taken offline.",
+        "description": "Drivers.\n\nErrors: DRIVER_NOT_APPROVED, NO_ACTIVE_VEHICLE, ON_TRIP, PHONE_NOT_VERIFIED. Then send driver:location over the socket every 3–5 s; drivers silent for 60 s are taken offline.",
         "security": [
           {
             "bearer": []
@@ -4675,7 +4852,7 @@
           "Driver"
         ],
         "summary": "Open offers",
-        "description": "Drivers.",
+        "description": "Drivers.\n\nErrors: PHONE_NOT_VERIFIED.",
         "security": [
           {
             "bearer": []
@@ -5245,7 +5422,7 @@
           "Driver"
         ],
         "summary": "Request my remaining deposit back",
-        "description": "Drivers.\n\nAllowed after the refund period (default 90 days from approval). Errors: REFUND_NOT_ELIGIBLE (details.eligibleFrom), NOTHING_TO_REFUND, REFUND_ALREADY_REQUESTED.",
+        "description": "Drivers.\n\nAllowed after the refund period (default 90 days from approval). Errors: REFUND_NOT_ELIGIBLE (details.eligibleFrom), NOTHING_TO_REFUND, REFUND_ALREADY_REQUESTED, PHONE_NOT_VERIFIED.",
         "security": [
           {
             "bearer": []

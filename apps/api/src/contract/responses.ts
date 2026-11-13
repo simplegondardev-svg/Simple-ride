@@ -37,6 +37,7 @@ export const User = model("User", z.object({
   fullName: z.string().nullable(),
   email: z.string().nullable().optional(),
   locale: z.enum(["am", "en", "om", "ti"]),
+  phoneVerified: z.boolean(),
   createdAt: isoTime.optional(),
 }));
 

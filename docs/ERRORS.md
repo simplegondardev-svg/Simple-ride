@@ -36,6 +36,7 @@ fails the build.
 | `ACCOUNT_EXISTS` | 409 | Registering a phone that already has an account for this role. | Offer "Log in instead". |
 | `WEAK_PASSWORD` | 422 | Password under 10 characters, contains the phone number, one repeated character, or equal to the temporary one. | Show the rule; keep the form filled. |
 | `INVALID_OTP` | 400 | Invalid or expired verification code. | Ask the user to re-enter the code or request a new one. |
+| `PHONE_NOT_VERIFIED` | 403 | Phone verification required before performing this action. | Prompt the user to verify their phone number. |
 | `INVALID_CREDENTIALS` | 401 | Wrong phone or password (deliberately the same for both). | "Wrong phone number or password". |
 | `ACCOUNT_LOCKED` | 423 | 5 wrong passwords; `details.lockedUntil` (ISO time). | "Too many attempts, try again at …"; offer support contact. |
 | `ACCOUNT_SUSPENDED` | 403 | Correct password, but the account is suspended. | "Your account is suspended, contact support". |
