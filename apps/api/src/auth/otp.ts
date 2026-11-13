@@ -4,8 +4,30 @@ import { logger } from "../lib/logger.js";
 import { redis } from "../lib/redis.js";
 
 const MAX_ATTEMPTS = 5;
-const hash = (phone: string, code: string) =>
-  createHash("sha256").update(`${phone}:${code}`).digest();
+
+export type OtpScope =
+  | { purpose: "register"; phone: string; role: "customer" | "driver" }
+  | { purpose: "verify_phone"; phone: string; userId: string }
+  | { purpose: "password_reset"; phone: string; userId: string };
+
+export function getOtpIdentity(scope: OtpScope): string {
+  switch (scope.purpose) {
+    case "register":
+      return `${scope.role}:${scope.phone}`;
+    case "verify_phone":
+    case "password_reset":
+      return scope.userId;
+  }
+}
+
+export const otpKey = (scope: OtpScope) => `otp:${scope.purpose}:${scope.phone}:${getOtpIdentity(scope)}`;
+export const attemptsKey = (scope: OtpScope) =>
+  `otp:attempts:${scope.purpose}:${scope.phone}:${getOtpIdentity(scope)}`;
+
+const hash = (scope: OtpScope, code: string) =>
+  createHash("sha256")
+    .update(`${scope.purpose}:${getOtpIdentity(scope)}:${scope.phone}:${code}`)
+    .digest();
 
 const VERIFY_OTP_LUA = `
 local stored = redis.call('GET', KEYS[1])
@@ -74,33 +96,40 @@ export class MockSmsSender implements SmsSender {
 }
 
 /** Issue a 6-digit code. Returns it only when OTP_DEV_ECHO is on. */
-export async function issueOtp(phone: string): Promise<string | undefined> {
+export async function issueOtp(scope: OtpScope): Promise<string | undefined> {
   const code = randomInt(0, 1_000_000).toString().padStart(6, "0");
+  const key = otpKey(scope);
+  const attKey = attemptsKey(scope);
   await redis
     .multi()
-    .set(`otp:${phone}`, hash(phone, code).toString("hex"), "EX", env.OTP_TTL_SECONDS)
-    .del(`otp:attempts:${phone}`)
+    .set(key, hash(scope, code).toString("hex"), "EX", env.OTP_TTL_SECONDS)
+    .del(attKey)
     .exec();
   try {
-    await sms.send(phone, `Simple Ride code: ${code}`);
+    await sms.send(scope.phone, `Simple Ride code: ${code}`);
   } catch (err) {
-    await redis.del(`otp:${phone}`, `otp:attempts:${phone}`);
+    await redis.del(key, attKey);
     throw err;
   }
   return env.OTP_DEV_ECHO ? code : undefined;
 }
 
 /** True once per issued code; burns the code after too many wrong guesses. */
-export async function verifyOtp(phone: string, code: string): Promise<boolean> {
-  const expectedHash = hash(phone, code).toString("hex");
+export async function verifyOtp(scope: OtpScope, code: string): Promise<boolean> {
+  const expectedHash = hash(scope, code).toString("hex");
   const res = (await redis.eval(
     VERIFY_OTP_LUA,
     2,
-    `otp:${phone}`,
-    `otp:attempts:${phone}`,
+    otpKey(scope),
+    attemptsKey(scope),
     expectedHash,
     env.OTP_TTL_SECONDS,
     MAX_ATTEMPTS,
   )) as number;
   return res === 1;
+}
+
+/** Explicitly clear an in-flight OTP and attempt counter. */
+export async function clearOtp(scope: OtpScope): Promise<void> {
+  await redis.del(otpKey(scope), attemptsKey(scope));
 }

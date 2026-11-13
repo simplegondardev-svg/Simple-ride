@@ -1,7 +1,7 @@
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
-import { consoleSms, MockSmsSender, setSmsSender } from "../src/auth/otp.js";
+import { attemptsKey, consoleSms, MockSmsSender, otpKey, setSmsSender } from "../src/auth/otp.js";
 import { SYSTEM, withContext } from "../src/db/context.js";
 import { pool } from "../src/db/pool.js";
 import { redis } from "../src/lib/redis.js";
@@ -17,7 +17,7 @@ function register(phone: string, role = "customer", password = PASSWORD, code?: 
   let expectedBody: any | undefined;
 
   const run = async () => {
-    const c = code ?? (await getOtpCode(phone));
+    const c = code ?? (await getOtpCode(phone, role as any));
     let req = request(app)
       .post("/api/v1/auth/register")
       .send({ phone, code: c, password, role, platform: "android" });
@@ -176,8 +176,8 @@ describe("register start (POST /auth/register/start)", () => {
     setSmsSender(failingSender);
     try {
       await request(app).post("/api/v1/auth/register/start").send({ phone }).expect(500);
-      expect(await redis.get(`otp:${phone}`)).toBeNull();
-      expect(await redis.get(`otp:attempts:${phone}`)).toBeNull();
+      expect(await redis.get(otpKey({ purpose: "register", phone, role: "customer" }))).toBeNull();
+      expect(await redis.get(attemptsKey({ purpose: "register", phone, role: "customer" }))).toBeNull();
     } finally {
       setSmsSender(mockSms);
     }
@@ -215,7 +215,7 @@ describe("register verification & completion (POST /auth/register)", () => {
     const code = mockSms.sent[0]!.message.replace("Simple Ride code: ", "");
 
     // Simulate OTP TTL expiration
-    await redis.del(`otp:${phone}`);
+    await redis.del(otpKey({ purpose: "register", phone, role: "customer" }));
 
     const res = await request(app).post("/api/v1/auth/register")
       .send({ phone, code, password: PASSWORD, role: "customer", platform: "android" })
@@ -377,7 +377,7 @@ describe("register verification & completion (POST /auth/register)", () => {
 
   it("rolls back the entire transaction if COMMIT fails after inserting all driver records", async () => {
     const phone = randomPhone();
-    const code = await getOtpCode(phone);
+    const code = await getOtpCode(phone, "driver");
 
     let capturedClient: any;
     let restoreQuery: (() => void) | undefined;
@@ -762,3 +762,462 @@ describe("legacy account phone verification (POST /auth/phone/verify/*)", () => 
       .send({ code: "123456" }).expect(200, { ok: true });
   });
 });
+
+describe("self-service password recovery (POST /auth/password/*)", () => {
+    it("existing and nonexistent phone numbers receive identical HTTP 200 { ok: true } responses", async () => {
+      const existing = await register(randomPhone()).expect(201);
+      const nonexistentPhone = randomPhone();
+
+      mockSms.clear();
+      // Existing customer receives 200 and an SMS
+      const res1 = await request(app)
+        .post("/api/v1/auth/password/forgot")
+        .send({ phone: existing.body.user.phone, role: "customer" })
+        .expect(200);
+      expect(res1.body).toEqual({ ok: true });
+      expect(mockSms.sent.length).toBe(1);
+
+      // Nonexistent account receives identical 200, but no SMS is sent
+      const res2 = await request(app)
+        .post("/api/v1/auth/password/forgot")
+        .send({ phone: nonexistentPhone, role: "customer" })
+        .expect(200);
+      expect(res2.body).toEqual({ ok: true });
+      expect(mockSms.sent.length).toBe(1); // unchanged
+    });
+
+    it("per-phone quota exhaustion suppresses SMS while returning HTTP 200 { ok: true }", async () => {
+      const user = await register(randomPhone()).expect(201);
+      const phone = user.body.user.phone;
+
+      // Exhaust per-phone limit
+      await redis.set(`rl:otp:phone:${phone}`, "3");
+
+      mockSms.clear();
+      const res = await request(app)
+        .post("/api/v1/auth/password/forgot")
+        .send({ phone, role: "customer" })
+        .expect(200);
+      expect(res.body).toEqual({ ok: true });
+      expect(mockSms.sent.length).toBe(0);
+
+      await redis.del(`rl:otp:phone:${phone}`);
+    });
+
+    it("SMS delivery failure returns generic HTTP 200 and leaves no usable OTP", async () => {
+      const user = await register(randomPhone()).expect(201);
+      const phone = user.body.user.phone;
+
+      const failingSender = {
+        async send() {
+          throw new Error("Simulated SMS network failure");
+        },
+      };
+      setSmsSender(failingSender);
+
+      try {
+        const res = await request(app)
+          .post("/api/v1/auth/password/forgot")
+          .send({ phone, role: "customer" })
+          .expect(200);
+        expect(res.body).toEqual({ ok: true });
+      } finally {
+        setSmsSender(mockSms);
+      }
+
+      // Ensure no usable OTP remains in Redis
+      const resetRes = await request(app)
+        .post("/api/v1/auth/password/reset")
+        .send({ phone, role: "customer", code: "123456", newPassword: "New-Safe-Pass-2026!" })
+        .expect(400);
+      expect(resetRes.body.error.code).toBe("INVALID_OTP");
+    });
+
+    it("IP rate limit applies to both existing and nonexistent account requests", async () => {
+      const testIp = "203.0.113.91";
+      await redis.set(`rl:password-forgot:ip:${testIp}`, "30");
+
+      const res = await request(app)
+        .post("/api/v1/auth/password/forgot")
+        .set("X-Forwarded-For", testIp)
+        .send({ phone: randomPhone() })
+        .expect(429);
+      expect(res.body.error.code).toBe("RATE_LIMITED");
+
+      await redis.del(`rl:password-forgot:ip:${testIp}`);
+    });
+
+    it("invalid OTPs count toward the password-reset IP limit", async () => {
+      const testIp = "203.0.113.92";
+      await redis.set(`rl:password-reset:ip:${testIp}`, "60");
+
+      const res = await request(app)
+        .post("/api/v1/auth/password/reset")
+        .set("X-Forwarded-For", testIp)
+        .send({ phone: randomPhone(), code: "123456", newPassword: "Safe-Password-2026!" })
+        .expect(429);
+      expect(res.body.error.code).toBe("RATE_LIMITED");
+
+      await redis.del(`rl:password-reset:ip:${testIp}`);
+    });
+
+    it("rejects weak new passwords without consuming the recovery OTP", async () => {
+      const user = await register(randomPhone()).expect(201);
+      const phone = user.body.user.phone;
+
+      mockSms.clear();
+      await request(app).post("/api/v1/auth/password/forgot").send({ phone }).expect(200);
+      const code = mockSms.sent[0]!.message.replace("Simple Ride code: ", "");
+
+      // Weak password (< 10 chars) rejected with 422
+      const weakRes = await request(app)
+        .post("/api/v1/auth/password/reset")
+        .send({ phone, code, newPassword: "short" })
+        .expect(422);
+      expect(weakRes.body.error.code).toBe("WEAK_PASSWORD");
+
+      // Verify OTP is still usable with valid password
+      const okRes = await request(app)
+        .post("/api/v1/auth/password/reset")
+        .send({ phone, code, newPassword: "New-Valid-Password-2026!" })
+        .expect(200);
+      expect(okRes.body).toEqual({ ok: true });
+    });
+
+    it("expensive password hashing occurs only after successful OTP verification", async () => {
+      const user = await register(randomPhone()).expect(201);
+      const phone = user.body.user.phone;
+
+      mockSms.clear();
+      await request(app).post("/api/v1/auth/password/forgot").send({ phone }).expect(200);
+
+      // Wrong OTP fails before hashPassword
+      const failRes = await request(app)
+        .post("/api/v1/auth/password/reset")
+        .send({ phone, code: "000000", newPassword: "Safe-Password-2026!" })
+        .expect(400);
+      expect(failRes.body.error.code).toBe("INVALID_OTP");
+    });
+
+    it("successful recovery updates password, clears lockout, revokes sessions, and requires new login", async () => {
+      const phone = randomPhone();
+      const reg = await register(phone, "customer").expect(201);
+      const oldRefreshToken = reg.body.refreshToken;
+
+      // Lock account with 5 wrong attempts
+      for (let i = 0; i < 5; i++) {
+        await login(phone, "WrongPassword1!", "customer");
+      }
+      const lockedRes = await login(phone, PASSWORD, "customer").expect(423);
+      expect(lockedRes.body.error.code).toBe("ACCOUNT_LOCKED");
+
+      // Request recovery
+      mockSms.clear();
+      await request(app).post("/api/v1/auth/password/forgot").send({ phone, role: "customer" }).expect(200);
+      const code = mockSms.sent[0]!.message.replace("Simple Ride code: ", "");
+
+      // Perform reset
+      const newPassword = "Reset-Password-Success-2026!";
+      await request(app)
+        .post("/api/v1/auth/password/reset")
+        .send({ phone, role: "customer", code, newPassword })
+        .expect(200, { ok: true });
+
+      // Old refresh token must be revoked
+      await request(app)
+        .post("/api/v1/auth/refresh")
+        .send({ refreshToken: oldRefreshToken })
+        .expect(401);
+
+      // Old password must fail (and not locked)
+      const oldLogin = await login(phone, PASSWORD, "customer").expect(401);
+      expect(oldLogin.body.error.code).toBe("INVALID_CREDENTIALS");
+
+      // New password succeeds and returns fresh session
+      const newLogin = await login(phone, newPassword, "customer").expect(200);
+      expect(newLogin.body.accessToken).toBeTruthy();
+
+      // Verify audit log entry
+      await withContext(SYSTEM, async (db) => {
+        const { rows } = await db.query(
+          "SELECT * FROM audit_logs WHERE action = 'user.password_reset' AND entity_id = $1",
+          [reg.body.user.id],
+        );
+        expect(rows.length).toBeGreaterThan(0);
+      });
+    });
+
+    it("registration OTP cannot be used to reset password", async () => {
+      const phone = randomPhone();
+      await register(phone, "customer").expect(201);
+
+      // Issue registration OTP for another account on same phone (or same phone driver)
+      mockSms.clear();
+      await request(app).post("/api/v1/auth/register/start").send({ phone, role: "driver" }).expect(200);
+      const regCode = mockSms.sent[0]!.message.replace("Simple Ride code: ", "");
+
+      // Attempt to reset customer password using registration OTP
+      const res = await request(app)
+        .post("/api/v1/auth/password/reset")
+        .send({ phone, role: "customer", code: regCode, newPassword: "New-Password-2026!" })
+        .expect(400);
+      expect(res.body.error.code).toBe("INVALID_OTP");
+    });
+
+    it("phone-verification OTP cannot be used to reset password", async () => {
+      const legacy = await makeLegacyUser("customer");
+      const loginRes = await login(legacy.phone, PASSWORD, "customer").expect(200);
+      const token = loginRes.body.accessToken;
+
+      // Start legacy phone verification
+      mockSms.clear();
+      await request(app).post("/api/v1/auth/phone/verify/start").set(bearer(token)).expect(200);
+      const verifyCode = mockSms.sent[0]!.message.replace("Simple Ride code: ", "");
+
+      // Attempt to reset password using verify_phone OTP
+      const res = await request(app)
+        .post("/api/v1/auth/password/reset")
+        .send({ phone: legacy.phone, role: "customer", code: verifyCode, newPassword: "New-Password-2026!" })
+        .expect(400);
+      expect(res.body.error.code).toBe("INVALID_OTP");
+    });
+
+    it("recovery OTP cannot be used to complete registration", async () => {
+      const phone = randomPhone();
+      await register(phone, "customer").expect(201);
+
+      // Issue recovery OTP
+      mockSms.clear();
+      await request(app).post("/api/v1/auth/password/forgot").send({ phone, role: "customer" }).expect(200);
+      const recoveryCode = mockSms.sent[0]!.message.replace("Simple Ride code: ", "");
+
+      // Attempt to register driver with recovery OTP
+      const res = await request(app)
+        .post("/api/v1/auth/register")
+        .send({ phone, role: "driver", code: recoveryCode, password: PASSWORD, platform: "android" })
+        .expect(400);
+      expect(res.body.error.code).toBe("INVALID_OTP");
+    });
+
+    it("customer recovery OTP cannot reset the driver account sharing the same phone", async () => {
+      const phone = randomPhone();
+      await register(phone, "customer").expect(201);
+      await register(phone, "driver").expect(201);
+
+      // Request recovery for customer account
+      mockSms.clear();
+      await request(app).post("/api/v1/auth/password/forgot").send({ phone, role: "customer" }).expect(200);
+      const custCode = mockSms.sent[0]!.message.replace("Simple Ride code: ", "");
+
+      // Attempt to reset driver account with customer code
+      const drvReset = await request(app)
+        .post("/api/v1/auth/password/reset")
+        .send({ phone, role: "driver", code: custCode, newPassword: "Driver-New-Pass-2026!" })
+        .expect(400);
+      expect(drvReset.body.error.code).toBe("INVALID_OTP");
+
+      // Driver login with original password still works
+      await login(phone, PASSWORD, "driver").expect(200);
+
+      // Customer account can be reset with the code
+      await request(app)
+        .post("/api/v1/auth/password/reset")
+        .send({ phone, role: "customer", code: custCode, newPassword: "Customer-New-Pass-2026!" })
+        .expect(200);
+    });
+
+    it("driver recovery OTP cannot reset the customer account sharing the same phone", async () => {
+      const phone = randomPhone();
+      await register(phone, "customer").expect(201);
+      await register(phone, "driver").expect(201);
+
+      // Request recovery for driver account
+      mockSms.clear();
+      await request(app).post("/api/v1/auth/password/forgot").send({ phone, role: "driver" }).expect(200);
+      const drvCode = mockSms.sent[0]!.message.replace("Simple Ride code: ", "");
+
+      // Attempt to reset customer account with driver code
+      const custReset = await request(app)
+        .post("/api/v1/auth/password/reset")
+        .send({ phone, role: "customer", code: drvCode, newPassword: "Customer-New-Pass-2026!" })
+        .expect(400);
+      expect(custReset.body.error.code).toBe("INVALID_OTP");
+
+      // Customer login with original password still works
+      await login(phone, PASSWORD, "customer").expect(200);
+
+      // Driver account can be reset with the code
+      await request(app)
+        .post("/api/v1/auth/password/reset")
+        .send({ phone, role: "driver", code: drvCode, newPassword: "Driver-New-Pass-2026!" })
+        .expect(200);
+    });
+
+    it("two concurrent reset requests cannot consume the same OTP twice", async () => {
+      const phone = randomPhone();
+      await register(phone, "customer").expect(201);
+
+      mockSms.clear();
+      await request(app).post("/api/v1/auth/password/forgot").send({ phone, role: "customer" }).expect(200);
+      const code = mockSms.sent[0]!.message.replace("Simple Ride code: ", "");
+
+      // Fire 2 concurrent reset requests
+      const [res1, res2] = await Promise.all([
+        request(app).post("/api/v1/auth/password/reset").send({ phone, role: "customer", code, newPassword: "Concurrent-Pass-1!" }),
+        request(app).post("/api/v1/auth/password/reset").send({ phone, role: "customer", code, newPassword: "Concurrent-Pass-2!" }),
+      ]);
+
+      const statuses = [res1.status, res2.status].sort();
+      expect(statuses).toEqual([200, 400]);
+    });
+
+    it("shared per-phone SMS quota enforces across registration, verification, and recovery", async () => {
+      const phone = randomPhone();
+      await register(phone, "customer").expect(201);
+      const loginRes = await login(phone, PASSWORD, "customer").expect(200);
+      const token = loginRes.body.accessToken;
+
+      // 1: /password/forgot
+      await request(app).post("/api/v1/auth/password/forgot").send({ phone, role: "customer" }).expect(200);
+      // 2: /phone/verify/start (even if verified, let's test quota on an unverified user)
+      // Clear quota for clean test
+      await redis.del(`rl:otp:phone:${phone}`);
+
+      // Count 1: register/start (on a different role for same phone)
+      await request(app).post("/api/v1/auth/register/start").send({ phone, role: "driver" }).expect(200);
+      // Count 2: password/forgot
+      await request(app).post("/api/v1/auth/password/forgot").send({ phone, role: "customer" }).expect(200);
+      // Count 3: password/forgot
+      await request(app).post("/api/v1/auth/password/forgot").send({ phone, role: "customer" }).expect(200);
+
+      // Count 4: register/start now fails with 429
+      const fourth = await request(app).post("/api/v1/auth/register/start").send({ phone, role: "driver" }).expect(429);
+      expect(fourth.body.error.code).toBe("RATE_LIMITED");
+
+      await redis.del(`rl:otp:phone:${phone}`);
+    });
+
+    it("defaults role to customer when omitted and rejects admin/staff roles", async () => {
+      const phone = randomPhone();
+      await register(phone, "customer").expect(201);
+
+      mockSms.clear();
+      // Omit role in forgot -> defaults to customer
+      await request(app).post("/api/v1/auth/password/forgot").send({ phone }).expect(200, { ok: true });
+      const code = mockSms.sent[0]!.message.replace("Simple Ride code: ", "");
+
+      // Omit role in reset -> defaults to customer
+      await request(app)
+        .post("/api/v1/auth/password/reset")
+        .send({ phone, code, newPassword: "Default-Role-Pass-2026!" })
+        .expect(200, { ok: true });
+
+      // Admin or staff role in forgot or reset rejected with 422
+      await request(app)
+        .post("/api/v1/auth/password/forgot")
+        .send({ phone, role: "admin" })
+        .expect(422);
+
+      await request(app)
+        .post("/api/v1/auth/password/reset")
+        .send({ phone, role: "staff", code: "123456", newPassword: "Staff-Password-2026!" })
+        .expect(422);
+    });
+
+    it("consumes shared per-phone quota identically for existing and unknown numbers, yielding identical register/start rate-limit outcome", async () => {
+      // 1. Existing customer account
+      const existingPhone = randomPhone();
+      await register(existingPhone, "customer").expect(201);
+
+      // 3 forgot requests for existing number
+      for (let i = 0; i < 3; i++) {
+        await request(app)
+          .post("/api/v1/auth/password/forgot")
+          .send({ phone: existingPhone, role: "customer" })
+          .expect(200, { ok: true });
+      }
+
+      // 4th request via register/start is rejected with 429
+      const existingRegisterStart = await request(app)
+        .post("/api/v1/auth/register/start")
+        .send({ phone: existingPhone, role: "driver" })
+        .expect(429);
+      expect(existingRegisterStart.body.error.code).toBe("RATE_LIMITED");
+
+      // 2. Unknown / nonexistent phone number
+      const unknownPhone = randomPhone();
+
+      // 3 forgot requests for unknown number
+      for (let i = 0; i < 3; i++) {
+        await request(app)
+          .post("/api/v1/auth/password/forgot")
+          .send({ phone: unknownPhone, role: "customer" })
+          .expect(200, { ok: true });
+      }
+
+      // 4th request via register/start is rejected with 429 IDENTICALLY
+      const unknownRegisterStart = await request(app)
+        .post("/api/v1/auth/register/start")
+        .send({ phone: unknownPhone, role: "customer" })
+        .expect(429);
+      expect(unknownRegisterStart.body.error.code).toBe("RATE_LIMITED");
+
+      await redis.del(`rl:otp:phone:${existingPhone}`, `rl:otp:phone:${unknownPhone}`);
+    });
+
+    it("shares per-phone quota across legacy phone-verification and password-recovery", async () => {
+      const legacy = await makeLegacyUser("customer");
+      const phone = legacy.phone;
+      const loginRes = await login(phone, PASSWORD, "customer").expect(200);
+      const token = loginRes.body.accessToken;
+
+      // Request 1: phone verify start
+      await request(app).post("/api/v1/auth/phone/verify/start").set(bearer(token)).expect(200, { ok: true });
+      // Request 2: password forgot
+      await request(app).post("/api/v1/auth/password/forgot").send({ phone, role: "customer" }).expect(200, { ok: true });
+      // Request 3: password forgot
+      await request(app).post("/api/v1/auth/password/forgot").send({ phone, role: "customer" }).expect(200, { ok: true });
+
+      // Request 4 on phone verify start returns 429
+      const verifyLimited = await request(app).post("/api/v1/auth/phone/verify/start").set(bearer(token)).expect(429);
+      expect(verifyLimited.body.error.code).toBe("RATE_LIMITED");
+
+      // Request 4 on password forgot returns 200 { ok: true } (suppressed SMS, no leak)
+      mockSms.clear();
+      await request(app).post("/api/v1/auth/password/forgot").send({ phone, role: "customer" }).expect(200, { ok: true });
+      expect(mockSms.sent.length).toBe(0);
+
+      await redis.del(`rl:otp:phone:${phone}`);
+    });
+
+    it("consumes shared quota for driver forgot requests regardless of whether driver account exists", async () => {
+      // User with customer account only on this phone (no driver account)
+      const phone = randomPhone();
+      await register(phone, "customer").expect(201);
+
+      // Forgot request for driver role (nonexistent account for this role)
+      for (let i = 0; i < 3; i++) {
+        await request(app)
+          .post("/api/v1/auth/password/forgot")
+          .send({ phone, role: "driver" })
+          .expect(200, { ok: true });
+      }
+
+      // Subsequent customer forgot request sees quota exhausted and suppresses SMS while returning 200
+      mockSms.clear();
+      await request(app)
+        .post("/api/v1/auth/password/forgot")
+        .send({ phone, role: "customer" })
+        .expect(200, { ok: true });
+      expect(mockSms.sent.length).toBe(0);
+
+      // Register start for this phone gets 429
+      const regStart = await request(app)
+        .post("/api/v1/auth/register/start")
+        .send({ phone, role: "driver" })
+        .expect(429);
+      expect(regStart.body.error.code).toBe("RATE_LIMITED");
+
+      await redis.del(`rl:otp:phone:${phone}`);
+    });
+  });

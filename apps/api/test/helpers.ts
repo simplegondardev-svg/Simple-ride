@@ -1,13 +1,18 @@
 import { randomInt } from "node:crypto";
-import { getSmsSender, issueOtp, MockSmsSender, setSmsSender } from "../src/auth/otp.js";
+import { getSmsSender, issueOtp, MockSmsSender, setSmsSender, type OtpScope } from "../src/auth/otp.js";
 import { SYSTEM, withContext } from "../src/db/context.js";
 import { normalizeEthiopianPhone } from "../src/lib/phone.js";
 
 export const randomPhone = () => `+2519${randomInt(10_000_000, 99_999_999)}`;
 
-/** Issue an OTP code via MockSmsSender for tests that register users. */
-export async function getOtpCode(phone: string): Promise<string> {
-  const normalized = normalizeEthiopianPhone(phone) ?? phone;
+/** Issue an OTP code via MockSmsSender for tests that register users or verify actions. */
+export async function getOtpCode(
+  scopeOrPhone: OtpScope | string,
+  role: "customer" | "driver" = "customer",
+): Promise<string> {
+  const scope: OtpScope = typeof scopeOrPhone === "string"
+    ? { purpose: "register", phone: normalizeEthiopianPhone(scopeOrPhone) ?? scopeOrPhone, role }
+    : scopeOrPhone;
   const current = getSmsSender();
   let mock: MockSmsSender;
   if (current instanceof MockSmsSender) {
@@ -16,8 +21,8 @@ export async function getOtpCode(phone: string): Promise<string> {
     mock = new MockSmsSender();
     setSmsSender(mock);
   }
-  await issueOtp(normalized);
-  const msg = mock.sent.filter((s) => s.phone === normalized).pop()?.message;
+  await issueOtp(scope);
+  const msg = mock.sent.filter((s) => s.phone === scope.phone).pop()?.message;
   return msg?.replace("Simple Ride code: ", "") || "123456";
 }
 

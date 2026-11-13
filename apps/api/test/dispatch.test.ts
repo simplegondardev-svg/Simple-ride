@@ -15,7 +15,7 @@ type Session = { accessToken: string; user: { id: string } };
 
 async function register(role: "customer" | "driver"): Promise<Session> {
   const phone = randomPhone();
-  const code = await getOtpCode(phone);
+  const code = await getOtpCode(phone, role);
   return (await request(app).post("/api/v1/auth/register")
     .send({ phone, code, password: PASSWORD, role, platform: "android" }).expect(201)).body;
 }

@@ -16,7 +16,7 @@ const api = (path: string) => `/api/v1${path}`;
 
 async function register(role: "customer" | "driver") {
   const phone = randomPhone();
-  const code = await getOtpCode(phone);
+  const code = await getOtpCode(phone, role);
   return (await request(app).post(api("/auth/register"))
     .send({ phone, code, password: PASSWORD, role, platform: "android" }).expect(201)).body;
 }

@@ -4,10 +4,11 @@ import { z } from "zod";
 import { env } from "../config/env.js";
 import { SYSTEM, withContext } from "../db/context.js";
 import { AppError, notFound } from "../lib/errors.js";
+import { logger } from "../lib/logger.js";
 import { normalizeEthiopianPhone } from "../lib/phone.js";
 import { rateLimit } from "../lib/rate-limit.js";
 import { requireAuth } from "./middleware.js";
-import { issueOtp, verifyOtp } from "./otp.js";
+import { clearOtp, issueOtp, verifyOtp } from "./otp.js";
 import { dummyHash, hashPassword, passwordProblem, verifyPassword } from "./password.js";
 import { createSession, revokeSession, rotateSession, signAccessToken, type UserRole } from "./tokens.js";
 
@@ -89,6 +90,16 @@ export const changePasswordBody = z
   .object({ currentPassword: z.string().min(1), newPassword: z.string(), ...device });
 export const refreshBody = z.object({ refreshToken: z.string().min(10) });
 export const logoutBody = z.object({ refreshToken: z.string() });
+export const forgotPasswordBody = z.object({
+  phone: phoneSchema,
+  role: z.enum(["customer", "driver"]).default("customer"),
+});
+export const resetPasswordBody = z.object({
+  phone: phoneSchema,
+  role: z.enum(["customer", "driver"]).default("customer"),
+  code: z.string().trim().regex(/^\d{6}$/, "Must be a 6-digit verification code"),
+  newPassword: z.string().min(1),
+});
 export const phoneVerifyConfirmBody = z.object({
   code: z.string().trim().regex(/^\d{6}$/, "Must be a 6-digit verification code"),
 });
@@ -107,7 +118,7 @@ authRouter.post("/register/start", async (req, res) => {
   });
 
   if (!existing) {
-    await issueOtp(body.phone);
+    await issueOtp({ purpose: "register", phone: body.phone, role: body.role });
   }
 
   res.json({ ok: true });
@@ -120,7 +131,7 @@ authRouter.post("/register", async (req, res) => {
   await rateLimit(`register:ip:${req.ip}`, 60, 600);
   checkNewPassword(body.password, body.phone);
 
-  const verified = await verifyOtp(body.phone, body.code);
+  const verified = await verifyOtp({ purpose: "register", phone: body.phone, role: body.role }, body.code);
   if (!verified) {
     throw new AppError(400, "INVALID_OTP", "Invalid or expired verification code");
   }
@@ -257,6 +268,96 @@ authRouter.post("/password/change", requireAuth, async (req, res) => {
   res.json(result);
 });
 
+// ───────────────────────── Password recovery (self-service) ─────────────────────────
+
+authRouter.post("/password/forgot", async (req, res) => {
+  const body = forgotPasswordBody.parse(req.body);
+  await rateLimit(`password-forgot:ip:${req.ip}`, 30, 600);
+
+  // Consume/check shared per-phone OTP quota unconditionally before user lookup.
+  // Suppress SMS on exhaustion, but always return 200 { ok: true } without leaking 429.
+  let canSendSms = true;
+  try {
+    await rateLimit(`otp:phone:${body.phone}`, 3, 600);
+  } catch (err) {
+    if (err instanceof AppError && err.code === "RATE_LIMITED") {
+      canSendSms = false;
+    } else {
+      throw err;
+    }
+  }
+
+  const user = await withContext(SYSTEM, async (db) => {
+    const { rows: [u] } = await db.query<{ id: string; status: string }>(
+      "SELECT id, status FROM users WHERE phone = $1 AND role = $2",
+      [body.phone, body.role],
+    );
+    return u;
+  });
+
+  if (canSendSms && user && user.status === "active") {
+    try {
+      await issueOtp({ purpose: "password_reset", phone: body.phone, userId: user.id });
+    } catch (err) {
+      logger.error({ err, userId: user.id }, "SMS delivery failed during password recovery");
+      await clearOtp({ purpose: "password_reset", phone: body.phone, userId: user.id });
+    }
+  }
+
+  res.json({ ok: true });
+});
+
+authRouter.post("/password/reset", async (req, res) => {
+  const body = resetPasswordBody.parse(req.body);
+  await rateLimit(`password-reset:ip:${req.ip}`, 60, 600);
+  checkNewPassword(body.newPassword, body.phone);
+
+  const user = await withContext(SYSTEM, async (db) => {
+    const { rows: [u] } = await db.query<{ id: string; status: string }>(
+      "SELECT id, status FROM users WHERE phone = $1 AND role = $2",
+      [body.phone, body.role],
+    );
+    return u;
+  });
+
+  if (!user || user.status !== "active") {
+    throw new AppError(400, "INVALID_OTP", "Invalid or expired verification code");
+  }
+
+  const verified = await verifyOtp(
+    { purpose: "password_reset", phone: body.phone, userId: user.id },
+    body.code,
+  );
+  if (!verified) {
+    throw new AppError(400, "INVALID_OTP", "Invalid or expired verification code");
+  }
+
+  const hash = await hashPassword(body.newPassword);
+
+  await withContext(SYSTEM, async (db) => {
+    await db.query(
+      `UPDATE user_credentials
+          SET password_hash = $2,
+              must_change_password = false,
+              failed_attempts = 0,
+              locked_until = NULL,
+              password_changed_at = now()
+        WHERE user_id = $1`,
+      [user.id, hash],
+    );
+    await db.query(
+      "UPDATE auth_sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL",
+      [user.id],
+    );
+    await db.query(
+      "INSERT INTO audit_logs (actor_id, action, entity, entity_id, data) VALUES ($1, $2, $3, $4, $5)",
+      [user.id, "user.password_reset", "user", user.id, JSON.stringify({ role: body.role })],
+    );
+  });
+
+  res.json({ ok: true });
+});
+
 // ───────────────────────── Sessions ─────────────────────────
 
 authRouter.post("/refresh", async (req, res) => {
@@ -281,8 +382,8 @@ authRouter.post("/phone/verify/start", requireAuth, async (req, res) => {
   await rateLimit(`phone-verify-start:ip:${req.ip}`, 30, 600);
 
   const user = await withContext(SYSTEM, async (db) => {
-    const { rows: [u] } = await db.query<{ phone: string; phone_verified_at: string | null }>(
-      "SELECT phone, phone_verified_at FROM users WHERE id = $1",
+    const { rows: [u] } = await db.query<{ id: string; phone: string; phone_verified_at: string | null }>(
+      "SELECT id, phone, phone_verified_at FROM users WHERE id = $1",
       [req.ctx.userId],
     );
     return u;
@@ -291,7 +392,7 @@ authRouter.post("/phone/verify/start", requireAuth, async (req, res) => {
 
   if (!user.phone_verified_at) {
     await rateLimit(`otp:phone:${user.phone}`, 3, 600);
-    await issueOtp(user.phone);
+    await issueOtp({ purpose: "verify_phone", phone: user.phone, userId: user.id });
   }
 
   res.json({ ok: true });
@@ -311,7 +412,7 @@ authRouter.post("/phone/verify/confirm", requireAuth, async (req, res) => {
   if (!user) throw notFound("User");
 
   if (!user.phone_verified_at) {
-    const verified = await verifyOtp(user.phone, body.code);
+    const verified = await verifyOtp({ purpose: "verify_phone", phone: user.phone, userId: user.id }, body.code);
     if (!verified) {
       throw new AppError(400, "INVALID_OTP", "Invalid or expired verification code");
     }

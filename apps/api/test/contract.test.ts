@@ -85,7 +85,7 @@ describe("responses match the documented models", () => {
 
   it("a full ride: driver, estimate, trip, offers, lifecycle", async () => {
     const driverPhone = randomPhone();
-    const driverCode = await getOtpCode(driverPhone);
+    const driverCode = await getOtpCode(driverPhone, "driver");
     const d = await request(app).post("/api/v1/auth/register")
       .send({ phone: driverPhone, code: driverCode, password: PASSWORD, role: "driver", platform: "android" }).expect(201);
     driver = d.body;
