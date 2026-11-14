@@ -81,13 +81,17 @@ function LoginForm() {
         <div className="row" style={{ marginTop: 16 }}>
           <button disabled={busy}>{mustChange ? "Save and continue" : "Log in"}</button>
         </div>
+        {!mustChange && (
+          <p className="muted" style={{ fontSize: 13, marginTop: 12 }}>
+            <Link href="/forgot-password">Forgot password?</Link>
+          </p>
+        )}
         {!mustChange && role === "customer" && (
           <p className="muted" style={{ fontSize: 13 }}>New here? <Link href="/register">Create an account</Link></p>
         )}
         {!mustChange && (
           <p className="muted" style={{ fontSize: 13 }}>
-            Forgot your password? {role === "customer" ? "Call support" : "Ask an admin"} for a temporary one.
-            Drivers use the Simple Ride Driver app.
+            Staff and admins should contact an administrator for temporary passwords.
           </p>
         )}
       </form>
