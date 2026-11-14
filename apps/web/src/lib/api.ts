@@ -6,6 +6,13 @@ export class ApiError extends Error {
   }
 }
 
+export function isPhoneNotVerifiedError(error: unknown): boolean {
+  if (!error) return false;
+  if (error instanceof ApiError && error.code === "PHONE_NOT_VERIFIED") return true;
+  if (typeof error === "object" && "code" in error && (error as any).code === "PHONE_NOT_VERIFIED") return true;
+  return false;
+}
+
 /** Browser → BFF → API. `path` is relative to /api/v1, e.g. "trips/estimate". */
 export async function api<T = any>(path: string, init?: { method?: string; body?: unknown }): Promise<T> {
   const res = await fetch(`/api/proxy/${path}`, {

@@ -2,8 +2,9 @@
 
 import dynamic from "next/dynamic";
 import { useEffect, useState } from "react";
-import { api, birr } from "@/lib/api";
+import { api, birr, isPhoneNotVerifiedError } from "@/lib/api";
 import type { LatLng } from "@/components/Map";
+import { PhoneVerificationPrompt } from "@/components/PhoneVerificationPrompt";
 
 const RideMap = dynamic(() => import("@/components/Map").then((m) => m.RideMap), { ssr: false });
 
@@ -30,6 +31,8 @@ export default function RidePage() {
   const [payment, setPayment] = useState<"cash" | "telebirr" | "wallet">("cash");
   const [trip, setTrip] = useState<Trip>();
   const [error, setError] = useState<string>();
+  const [booking, setBooking] = useState(false);
+  const [needsVerification, setNeedsVerification] = useState(false);
 
   function pick(p: LatLng) {
     if (trip && ACTIVE.includes(trip.status)) return;
@@ -54,7 +57,8 @@ export default function RidePage() {
   }, [trip?.id, trip?.status]);
 
   async function book() {
-    if (!pickup || !dropoff || !choice) return;
+    if (!pickup || !dropoff || !choice || booking) return;
+    setBooking(true);
     setError(undefined);
     try {
       const created = await api<Trip>("trips", {
@@ -62,8 +66,20 @@ export default function RidePage() {
       });
       setTrip(created);
     } catch (e) {
-      setError((e as Error).message);
+      if (isPhoneNotVerifiedError(e)) {
+        setNeedsVerification(true);
+      } else {
+        setError((e as Error).message);
+      }
+    } finally {
+      setBooking(false);
     }
+  }
+
+  function handleVerified() {
+    setNeedsVerification(false);
+    // Seamlessly retry the protected trip creation action without signing in again
+    book();
   }
 
   async function cancel() {
@@ -96,7 +112,11 @@ export default function RidePage() {
                 <option value="wallet">Wallet</option>
                 <option value="telebirr" disabled>telebirr (coming soon)</option>
               </select>
-              <div style={{ marginTop: 16 }}><button onClick={book}>Request ride</button></div>
+              <div style={{ marginTop: 16 }}>
+                <button disabled={booking} onClick={book}>
+                  {booking ? "Requesting…" : "Request ride"}
+                </button>
+              </div>
             </>
           )}
           {trip && (
@@ -120,6 +140,13 @@ export default function RidePage() {
           {error && <p className="error">{error}</p>}
         </div>
       </div>
+
+      <PhoneVerificationPrompt
+        isOpen={needsVerification}
+        actionDescription="booking a ride"
+        onClose={() => setNeedsVerification(false)}
+        onVerified={handleVerified}
+      />
     </main>
   );
 }
