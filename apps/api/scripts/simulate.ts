@@ -58,9 +58,13 @@ const db = new pg.Client({ connectionString: process.env.DATABASE_OWNER_URL });
 async function createUser(role: "customer" | "driver", n: number) {
   // Valid Ethiopian format: +2519 + 3 digits of the run id + 5-digit counter.
   const phone = `+2519${runId.slice(-3)}${String(n).padStart(5, "0")}`;
+  const insertSql = role === "customer"
+    ? `INSERT INTO users (phone, role, full_name, account_number) VALUES ($1, $2, $3, 'SR-' || nextval('customer_account_number_seq'))
+       ON CONFLICT (phone, role) DO UPDATE SET status = 'active' RETURNING id`
+    : `INSERT INTO users (phone, role, full_name) VALUES ($1, $2, $3)
+       ON CONFLICT (phone, role) DO UPDATE SET status = 'active' RETURNING id`;
   const { rows: [u] } = await db.query(
-    `INSERT INTO users (phone, role, full_name) VALUES ($1, $2, $3)
-     ON CONFLICT (phone, role) DO UPDATE SET status = 'active' RETURNING id`,
+    insertSql,
     [phone, role, `Sim ${role} ${n}`],
   );
   await db.query("INSERT INTO wallets (user_id) VALUES ($1) ON CONFLICT DO NOTHING", [u.id]);

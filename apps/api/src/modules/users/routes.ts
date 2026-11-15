@@ -7,7 +7,7 @@ import { notFound } from "../../lib/errors.js";
 export const usersRouter = Router();
 usersRouter.use(requireAuth);
 
-const ME = `id, phone, role, status, full_name AS "fullName", email, locale, created_at AS "createdAt", (phone_verified_at IS NOT NULL) AS "phoneVerified"`;
+const ME = `id, phone, role, status, full_name AS "fullName", email, locale, created_at AS "createdAt", (phone_verified_at IS NOT NULL) AS "phoneVerified", account_number AS "accountNumber"`;
 
 
 // Request schemas (exported: the OpenAPI spec is built from them).

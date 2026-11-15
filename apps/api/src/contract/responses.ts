@@ -38,6 +38,7 @@ export const User = model("User", z.object({
   email: z.string().nullable().optional(),
   locale: z.enum(["am", "en", "om", "ti"]),
   phoneVerified: z.boolean(),
+  accountNumber: z.string().nullable().optional().describe("Unique customer account number, e.g. SR-100001"),
   createdAt: isoTime.optional(),
 }));
 

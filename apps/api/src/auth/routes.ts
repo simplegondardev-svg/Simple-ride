@@ -26,7 +26,7 @@ import { createSession, revokeSession, rotateSession, signAccessToken, type User
  */
 export const authRouter = Router();
 
-const USER_COLS = `id, phone, role, status, full_name AS "fullName", locale, (phone_verified_at IS NOT NULL) AS "phoneVerified"`;
+const USER_COLS = `id, phone, role, status, full_name AS "fullName", locale, (phone_verified_at IS NOT NULL) AS "phoneVerified", account_number AS "accountNumber"`;
 const MAX_FAILED = 5;
 const LOCK_MINUTES = 15;
 
@@ -141,8 +141,16 @@ authRouter.post("/register", async (req, res) => {
   const result = await withContext(SYSTEM, async (db) => {
     let user;
     try {
+      const insertSql = body.role === "customer"
+        ? `INSERT INTO users (phone, role, full_name, phone_verified_at, account_number)
+           VALUES ($1, $2, $3, now(), 'SR-' || nextval('customer_account_number_seq'))
+           RETURNING ${USER_COLS}`
+        : `INSERT INTO users (phone, role, full_name, phone_verified_at, account_number)
+           VALUES ($1, $2, $3, now(), NULL)
+           RETURNING ${USER_COLS}`;
+
       ({ rows: [user] } = await db.query(
-        `INSERT INTO users (phone, role, full_name, phone_verified_at) VALUES ($1, $2, $3, now()) RETURNING ${USER_COLS}`,
+        insertSql,
         [body.phone, body.role, body.fullName ?? null],
       ));
     } catch (err: any) {

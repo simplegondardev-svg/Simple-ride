@@ -33,8 +33,11 @@ export const PIASSA = { lat: 9.0349, lng: 38.7525 };
 /** Create a user directly (bypassing OTP) for SQL-level tests. */
 export async function makeUser(role: "customer" | "driver" | "admin" | "staff") {
   return withContext(SYSTEM, async (db) => {
+    const insertSql = role === "customer"
+      ? "INSERT INTO users (phone, role, account_number) VALUES ($1, $2, 'SR-' || nextval('customer_account_number_seq')) RETURNING id"
+      : "INSERT INTO users (phone, role) VALUES ($1, $2) RETURNING id";
     const { rows: [u] } = await db.query(
-      "INSERT INTO users (phone, role) VALUES ($1, $2) RETURNING id", [randomPhone(), role],
+      insertSql, [randomPhone(), role],
     );
     if (role !== "staff") await db.query("INSERT INTO wallets (user_id) VALUES ($1)", [u.id]);
     if (role === "driver") {
@@ -77,9 +80,12 @@ export async function makeBackoffice(role: "admin" | "staff", phone = randomPhon
 export async function makeLegacyUser(role: "customer" | "driver", phone = randomPhone()) {
   const { hashPassword } = await import("../src/auth/password.js");
   const hash = await hashPassword(PASSWORD);
-  const id = await withContext(SYSTEM, async (db) => {
+  return withContext(SYSTEM, async (db) => {
+    const insertSql = role === "customer"
+      ? "INSERT INTO users (phone, role, phone_verified_at, account_number) VALUES ($1, $2, NULL, 'SR-' || nextval('customer_account_number_seq')) RETURNING id"
+      : "INSERT INTO users (phone, role, phone_verified_at) VALUES ($1, $2, NULL) RETURNING id";
     const { rows: [u] } = await db.query(
-      "INSERT INTO users (phone, role, phone_verified_at) VALUES ($1, $2, NULL) RETURNING id",
+      insertSql,
       [phone, role],
     );
     await db.query(
@@ -90,9 +96,8 @@ export async function makeLegacyUser(role: "customer" | "driver", phone = random
     if (role === "driver") {
       await db.query("INSERT INTO driver_profiles (user_id) VALUES ($1)", [u.id]);
     }
-    return u.id as string;
+    return { id: u.id as string, phone };
   });
-  return { id, phone };
 }
 
 /** Credit a driver's prepaid deposit directly (default: the 10,000 ETB minimum). */

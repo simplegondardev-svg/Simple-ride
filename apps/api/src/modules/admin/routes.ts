@@ -55,11 +55,11 @@ adminRouter.get("/users", requirePermission("users.view", "users.suspend", "user
   const q = adminUsersQuery.parse(req.query);
   const rows = await withContext(req.ctx, async (db) =>
     (await db.query(
-      `SELECT u.id, u.phone, u.role, u.status, u.full_name AS "fullName", u.created_at AS "createdAt",
+      `SELECT u.id, u.phone, u.role, u.status, u.full_name AS "fullName", u.account_number AS "accountNumber", u.created_at AS "createdAt",
               dp.approval_status AS "approvalStatus", dp.availability
          FROM users u LEFT JOIN driver_profiles dp ON dp.user_id = u.id
         WHERE ($1::user_role IS NULL OR u.role = $1)
-          AND ($2::text IS NULL OR u.phone LIKE '%' || $2 || '%' OR u.full_name ILIKE '%' || $2 || '%')
+          AND ($2::text IS NULL OR u.phone LIKE '%' || $2 || '%' OR u.full_name ILIKE '%' || $2 || '%' OR u.account_number ILIKE '%' || $2 || '%')
           AND ($3::timestamptz IS NULL OR u.created_at < $3)
         ORDER BY u.created_at DESC LIMIT $4`,
       [q.role ?? null, q.search ?? null, q.before ?? null, q.limit],
