@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { api, birr, isPhoneNotVerifiedError } from "@/lib/api";
 import type { LatLng } from "@/components/Map";
 import { PhoneVerificationPrompt } from "@/components/PhoneVerificationPrompt";
+import { CustomerNav } from "@/components/CustomerNav";
 
 const RideMap = dynamic(() => import("@/components/Map").then((m) => m.RideMap), { ssr: false });
 
@@ -87,8 +88,10 @@ export default function RidePage() {
   }
 
   return (
-    <main>
-      <h1>Book a ride</h1>
+    <>
+      <CustomerNav />
+      <main>
+        <h1>Book a ride</h1>
       <div className="split">
         <RideMap pickup={pickup} dropoff={dropoff} path={estimate?.path} onPick={pick} />
         <div className="card">
@@ -148,5 +151,6 @@ export default function RidePage() {
         onVerified={handleVerified}
       />
     </main>
+    </>
   );
 }

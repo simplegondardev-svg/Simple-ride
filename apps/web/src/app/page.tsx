@@ -7,6 +7,7 @@ export default function Home() {
       <p className="muted">Book a ride anywhere in Addis Ababa. Pay with cash, telebirr or your wallet.</p>
       <div className="row">
         <Link className="btn" href="/ride">Book a ride</Link>
+        <Link href="/account">My Account</Link>
         <Link href="/admin">Admin dashboard</Link>
       </div>
     </main>
