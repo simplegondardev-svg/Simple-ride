@@ -456,10 +456,30 @@ export async function completeTrip(driverId: string, tripId: string) {
     let balance = (await balances(db, [driverId])).get(driverId) ?? 0;
     if (trip.paymentMethod === "cash") {
       // The driver collected the fare in cash; our share comes out of their deposit.
-      if (commission > 0) balance = await postLedger(db, { userId: driverId, amount: -commission, kind: "commission", tripId });
+      if (commission > 0) {
+        balance = await postLedger(db, {
+          userId: driverId,
+          amount: -commission,
+          kind: "commission",
+          tripId,
+          idempotencyKey: `trip:${tripId}:commission`,
+        });
+      }
     } else if (trip.paymentMethod === "wallet") {
-      await postLedger(db, { userId: trip.customerId, amount: -finalFare, kind: "trip_payment", tripId });
-      balance = await postLedger(db, { userId: driverId, amount: finalFare - commission, kind: "trip_earning", tripId });
+      await postLedger(db, {
+        userId: trip.customerId,
+        amount: -finalFare,
+        kind: "trip_payment",
+        tripId,
+        idempotencyKey: `trip:${tripId}:payment`,
+      });
+      balance = await postLedger(db, {
+        userId: driverId,
+        amount: finalFare - commission,
+        kind: "trip_earning",
+        tripId,
+        idempotencyKey: `trip:${tripId}:earning`,
+      });
       await db.query("UPDATE trips SET payment_status = 'paid' WHERE id = $1", [tripId]);
       trip.paymentStatus = "paid";
     }

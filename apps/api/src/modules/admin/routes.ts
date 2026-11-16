@@ -302,8 +302,22 @@ adminRouter.post("/drivers/:id/deposits", requirePermission("finance.deposits.re
   if (body.amount < settings.minDeposit) {
     throw new AppError(422, "DEPOSIT_TOO_SMALL", "Deposit is below the minimum", { minDeposit: settings.minDeposit });
   }
+  const idempotencyKey = body.idempotencyKey ?? (req.get("idempotency-key")?.trim() || undefined);
+  if (!idempotencyKey) {
+    throw new AppError(400, "INVALID_IDEMPOTENCY_KEY", "Idempotency key is required");
+  }
+  if (idempotencyKey.length > 100) {
+    throw new AppError(400, "INVALID_IDEMPOTENCY_KEY", "Idempotency key must not exceed 100 characters");
+  }
   const balance = await withContext(SYSTEM, (db) =>
-    postLedger(db, { userId: id, amount: body.amount, kind: "deposit", reference: body.reference, createdBy: req.ctx.userId }),
+    postLedger(db, {
+      userId: id,
+      amount: body.amount,
+      kind: "deposit",
+      reference: body.reference,
+      createdBy: req.ctx.userId,
+      idempotencyKey,
+    }),
   );
   await withContext(req.ctx, (db) => audit(db, "driver.deposit", "driver", id, body));
   const wallet = walletStatus(balance, settings);
@@ -341,7 +355,14 @@ adminRouter.post("/refunds/:id/pay", requirePermission("finance.refunds.manage")
   const refund = await withContext(SYSTEM, async (db) => {
     const { rows: [w] } = await db.query("SELECT balance FROM wallets WHERE user_id = $1 FOR UPDATE", [driverId]);
     if (!w || w.balance <= 0) throw new AppError(422, "NOTHING_TO_REFUND", "The driver's balance is zero", { balance: w?.balance ?? 0 });
-    await postLedger(db, { userId: driverId, amount: -w.balance, kind: "payout", reference, createdBy: req.ctx.userId });
+    await postLedger(db, {
+      userId: driverId,
+      amount: -w.balance,
+      kind: "payout",
+      reference,
+      createdBy: req.ctx.userId,
+      idempotencyKey: `refund:${id}:payout`,
+    });
     await db.query("UPDATE driver_profiles SET availability = 'offline' WHERE user_id = $1", [driverId]);
     const { rows: [r] } = await db.query(
       `UPDATE deposit_refunds r SET status = 'paid', amount = $2, reference = $3, decided_at = now(), decided_by = $4
@@ -433,19 +454,24 @@ adminRouter.get("/wallets/:id", requirePermission("finance.wallets.view", "finan
 adminRouter.post("/wallets/:id/adjust", requirePermission("finance.wallets.adjust"), async (req, res) => {
   const { id } = uuidParam.parse(req.params);
   const body = walletAdjustBody.parse(req.body);
+  const idempotencyKey = body.idempotencyKey ?? (req.get("idempotency-key")?.trim() || undefined);
+  if (!idempotencyKey) {
+    throw new AppError(400, "INVALID_IDEMPOTENCY_KEY", "Idempotency key is required");
+  }
+  if (idempotencyKey.length > 100) {
+    throw new AppError(400, "INVALID_IDEMPOTENCY_KEY", "Idempotency key must not exceed 100 characters");
+  }
   const result = await withContext(req.ctx, async (db) => {
-    const { rows: [w] } = await db.query(
-      "UPDATE wallets SET balance = balance + $2, updated_at = now() WHERE user_id = $1 RETURNING balance",
-      [id, body.amount],
-    );
-    if (!w) throw notFound("Wallet");
-    await db.query(
-      `INSERT INTO wallet_transactions (user_id, amount, balance_after, kind, reference, created_by)
-       VALUES ($1, $2, $3, 'adjustment', $4, app.uid())`,
-      [id, body.amount, w.balance, body.reason],
-    );
+    const balance = await postLedger(db, {
+      userId: id,
+      amount: body.amount,
+      kind: "adjustment",
+      reference: body.reason,
+      createdBy: req.ctx.userId ?? undefined,
+      idempotencyKey,
+    });
     await audit(db, "wallet.adjust", "wallet", id, body);
-    return { balance: w.balance };
+    return { balance };
   });
   res.json(result);
 });
@@ -617,6 +643,7 @@ export const walletAdjustBody = z
     amount: z.number().int().refine((v) => v !== 0, "amount must not be zero")
       .refine((v) => Math.abs(v) <= 10_000_000, "amount too large (max 100,000 ETB)"),
     reason: z.string().trim().min(5).max(300),
+    idempotencyKey: z.string().trim().min(1).max(100).optional(),
   });
 export const settingsBody = SETTINGS.strict();
 export const createStaffBody = z
@@ -643,6 +670,7 @@ export const driverCommissionBody = z.object({
 export const depositBody = z.object({
   amount: z.number().int().positive().describe("Santim"),
   reference: z.string().trim().min(2).max(100).describe("Receipt or bank slip number"),
+  idempotencyKey: z.string().trim().min(1).max(100).optional(),
 });
 export const refundsQuery = z.object({ status: z.enum(["pending", "paid", "rejected", "cancelled"]).optional() });
 export const refundPayBody = z.object({

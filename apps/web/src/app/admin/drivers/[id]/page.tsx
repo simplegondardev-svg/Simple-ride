@@ -29,15 +29,17 @@ export default function DriverDetailPage() {
   const load = useCallback(() => api<Driver>(`admin/drivers/${id}`).then(setD).catch((e) => setMsg({ ok: false, text: e.message })), [id]);
   useEffect(() => { load(); }, [load]);
 
-  async function act(fn: () => Promise<unknown>, ok: string) {
+  async function act(fn: () => Promise<unknown>, ok: string): Promise<boolean> {
     setMsg(undefined);
     try {
       await fn();
       await load();
       setMsg({ ok: true, text: ok });
+      return true;
     } catch (e) {
       const err = e as Error & { code?: string };
       setMsg({ ok: false, text: err.message });
+      return false;
     }
   }
 
@@ -141,7 +143,7 @@ export default function DriverDetailPage() {
   );
 }
 
-type Act = (fn: () => Promise<unknown>, ok: string) => Promise<void>;
+type Act = (fn: () => Promise<unknown>, ok: string) => Promise<boolean>;
 
 function DocRow({ doc, canReview, act }: { doc: Doc; canReview: boolean; act: Act }) {
   const [expiresOn, setExpiresOn] = useState(doc.expiresOn ?? "");
@@ -189,17 +191,37 @@ function DocRow({ doc, canReview, act }: { doc: Doc; canReview: boolean; act: Ac
 function DepositForm({ driverId, minDeposit, act }: { driverId: string; minDeposit: number; act: Act }) {
   const [amount, setAmount] = useState(String(minDeposit / 100));
   const [reference, setReference] = useState("");
+  const makeKey = () =>
+    typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `dep_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+
+  const [idempotencyKey, setIdempotencyKey] = useState(makeKey);
+
   return (
-    <form onSubmit={(e) => {
-      e.preventDefault();
-      act(() => api(`admin/drivers/${driverId}/deposits`, { body: { amount: toSantim(amount), reference } }), "Deposit recorded");
-      setReference("");
-    }}>
+    <form
+      onSubmit={async (e) => {
+        e.preventDefault();
+        const ok = await act(
+          () =>
+            api(`admin/drivers/${driverId}/deposits`, {
+              body: { amount: toSantim(amount), reference, idempotencyKey },
+            }),
+          "Deposit recorded",
+        );
+        if (ok) {
+          setReference("");
+          setIdempotencyKey(makeKey());
+        }
+      }}
+    >
       <label htmlFor="dep-amt">Amount received (ETB, minimum {birr(minDeposit)})</label>
       <input id="dep-amt" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} required />
       <label htmlFor="dep-ref">Receipt / slip number</label>
       <input id="dep-ref" value={reference} onChange={(e) => setReference(e.target.value)} required minLength={2} />
-      <div style={{ marginTop: 12 }}><button>Record deposit</button></div>
+      <div style={{ marginTop: 12 }}>
+        <button>Record deposit</button>
+      </div>
     </form>
   );
 }
