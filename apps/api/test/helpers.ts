@@ -1,6 +1,7 @@
 import { randomInt } from "node:crypto";
 import { getSmsSender, issueOtp, MockSmsSender, setSmsSender, type OtpScope } from "../src/auth/otp.js";
 import { SYSTEM, withContext } from "../src/db/context.js";
+import { assertTestDatabaseIsolation } from "../src/db/isolation.js";
 import { normalizeEthiopianPhone } from "../src/lib/phone.js";
 
 export const randomPhone = () => `+2519${randomInt(10_000_000, 99_999_999)}`;
@@ -32,6 +33,7 @@ export const PIASSA = { lat: 9.0349, lng: 38.7525 };
 
 /** Create a user directly (bypassing OTP) for SQL-level tests. */
 export async function makeUser(role: "customer" | "driver" | "admin" | "staff") {
+  assertTestDatabaseIsolation();
   return withContext(SYSTEM, async (db) => {
     const insertSql = role === "customer"
       ? "INSERT INTO users (phone, role, account_number) VALUES ($1, $2, 'SR-' || nextval('customer_account_number_seq')) RETURNING id"
@@ -49,6 +51,7 @@ export async function makeUser(role: "customer" | "driver" | "admin" | "staff") 
 
 /** Replace a staff member's permissions directly (owner-level, for SQL tests). */
 export async function grant(staffId: string, permissions: string[]) {
+  assertTestDatabaseIsolation();
   await withContext(SYSTEM, async (db) => {
     await db.query("DELETE FROM staff_permissions WHERE user_id = $1", [staffId]);
     for (const p of permissions) {
@@ -61,6 +64,7 @@ export const PASSWORD = "Addis-Ride-2026!";
 
 /** Admin or staff account with a known, already-changed password. */
 export async function makeBackoffice(role: "admin" | "staff", phone = randomPhone()) {
+  assertTestDatabaseIsolation();
   const { hashPassword } = await import("../src/auth/password.js");
   const hash = await hashPassword(PASSWORD);
   const id = await withContext(SYSTEM, async (db) => {
@@ -78,6 +82,7 @@ export async function makeBackoffice(role: "admin" | "staff", phone = randomPhon
 
 /** Create an unverified legacy user with credentials for verification testing. */
 export async function makeLegacyUser(role: "customer" | "driver", phone = randomPhone()) {
+  assertTestDatabaseIsolation();
   const { hashPassword } = await import("../src/auth/password.js");
   const hash = await hashPassword(PASSWORD);
   return withContext(SYSTEM, async (db) => {
@@ -102,6 +107,7 @@ export async function makeLegacyUser(role: "customer" | "driver", phone = random
 
 /** Credit a driver's prepaid deposit directly (default: the 10,000 ETB minimum). */
 export async function fundDriver(driverId: string, amount = 1_000_000) {
+  assertTestDatabaseIsolation();
   const { postLedger } = await import("../src/modules/wallet/ledger.js");
   return withContext(SYSTEM, (db) => postLedger(db, { userId: driverId, amount, kind: "deposit", reference: "test" }));
 }
