@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, feature/simple-ride-checkpoints]
   pull_request:
 
 jobs:
@@ -15,7 +15,7 @@ jobs:
           POSTGRES_DB: simpleride
           POSTGRES_USER: simpleride_owner
           POSTGRES_PASSWORD: owner_dev_password
-        ports: ["5432:5432"]
+        ports: ["5432:5432", "5434:5432"]
         options: >-
           --health-cmd "pg_isready -U simpleride_owner -d simpleride"
           --health-interval 5s --health-retries 10
@@ -32,10 +32,14 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
-      - name: Create runtime DB role (mirrors infra/postgres/init.sh)
+      - name: Create runtime DB role & test database (mirrors infra/postgres/init.sh)
         run: |
-          PGPASSWORD=owner_dev_password psql -h localhost -U simpleride_owner -d simpleride -c \
+          PGPASSWORD=owner_dev_password psql -h localhost -p 5432 -U simpleride_owner -d simpleride -c \
             "CREATE ROLE simpleride_app LOGIN PASSWORD 'app_dev_password' NOBYPASSRLS; GRANT CONNECT ON DATABASE simpleride TO simpleride_app;"
+          PGPASSWORD=owner_dev_password psql -h localhost -p 5432 -U simpleride_owner -d simpleride -c \
+            "CREATE DATABASE simpleride_test;"
+          PGPASSWORD=owner_dev_password psql -h localhost -p 5432 -U simpleride_owner -d simpleride_test -c \
+            "GRANT CONNECT ON DATABASE simpleride_test TO simpleride_app;"
       - name: S3-compatible test server (moto) for the storage driver test
         run: |
           # Own virtualenv: the runner's system boto3/pyOpenSSL (dist-packages) break moto's import.
@@ -45,11 +49,19 @@ jobs:
           for i in $(seq 1 30); do curl -fs http://127.0.0.1:9000/ >/dev/null && exit 0; sleep 1; done
           echo "moto did not start"; cat "$RUNNER_TEMP/moto.log"; exit 1
       - run: pnpm --filter @simple-ride/api typecheck
-      - run: pnpm --filter @simple-ride/api db:migrate
-      - run: pnpm --filter @simple-ride/api db:seed
+      - name: Migrate test database
+        run: pnpm --filter @simple-ride/api db:migrate
+        env:
+          DATABASE_OWNER_URL: postgres://simpleride_owner:owner_dev_password@localhost:5434/simpleride_test
+      - name: Seed test database
+        run: pnpm --filter @simple-ride/api db:seed
+        env:
+          DATABASE_OWNER_URL: postgres://simpleride_owner:owner_dev_password@localhost:5434/simpleride_test
       - run: pnpm --filter @simple-ride/api test
         env:
           TEST_S3_ENDPOINT: http://127.0.0.1:9000
+          TEST_DATABASE_URL: postgres://simpleride_app:app_dev_password@localhost:5434/simpleride_test
+          TEST_REDIS_URL: redis://localhost:6379/15
       - run: pnpm --filter @simple-ride/api build
 
   web:
